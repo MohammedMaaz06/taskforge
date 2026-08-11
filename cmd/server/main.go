@@ -4,24 +4,33 @@ import (
 "fmt"
 "log"
 "taskforge/internal/scheduler"
+"taskforge/internal/worker"
 "taskforge/pkg/task"
 )
 
 func main() {
-log.Println("Starting TaskForge Engine...")
+log.Println("Starting TaskForge Engine v0.2...")
 
+// 1. Initialize Safe Priority Queue
 queue := scheduler.NewSafeQueue()
 
-// Enqueue tasks with varying priorities
-queue.Push(task.NewTask("1", "low_priority_job", []byte("data1"), 1))
-queue.Push(task.NewTask("2", "critical_job", []byte("data2"), 10))
-queue.Push(task.NewTask("3", "medium_priority_job", []byte("data3"), 5))
+// 2. Enqueue sample workload
+queue.Push(task.NewTask("101", "export_pdf_report", []byte("pdf_data"), 1))
+queue.Push(task.NewTask("102", "process_payment_gate", []byte("payment_data"), 10))
+queue.Push(task.NewTask("103", "send_welcome_email", []byte("email_data"), 5))
+queue.Push(task.NewTask("104", "database_backup", []byte("backup_data"), 8))
 
-fmt.Printf("Queued %d tasks.\n", queue.Len())
+// 3. Initialize Worker Pool with 2 parallel workers
+pool := worker.NewWorkerPool(2, 10)
+pool.Start()
 
-// Dequeue - Should process critical_job (10) -> medium (5) -> low (1)
+// 4. Dispatch tasks from Queue to Worker Pool
 for queue.Len() > 0 {
 t := queue.Pop()
-fmt.Printf("Processing Task ID: %s | Name: %s | Priority: %d\n", t.ID, t.Name, t.Priority)
+pool.Submit(t)
 }
+
+// 5. Graceful shutdown
+pool.Stop()
+fmt.Printf("Total tasks executed successfully: %d\n", pool.TotalDone)
 }
