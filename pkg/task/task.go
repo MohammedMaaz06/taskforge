@@ -1,6 +1,7 @@
 package task
 
 import (
+"math"
 "time"
 )
 
@@ -11,20 +12,21 @@ StatusPending   Status = "PENDING"
 StatusRunning   Status = "RUNNING"
 StatusCompleted Status = "COMPLETED"
 StatusFailed    Status = "FAILED"
+StatusDLQ       Status = "DEAD_LETTER"
 )
 
-// Task represents a unit of work within TaskForge
 type Task struct {
-ID           string    `json:"id"`
-Name         string    `json:"name"`
-Payload      []byte    `json:"payload"`
-Status       Status    `json:"status"`
-Priority     int       `json:"priority"` // Higher value = higher priority
-MaxRetries   int       `json:"max_retries"`
-CurrentRetry int       `json:"current_retry"`
-ScheduledAt  time.Time `json:"scheduled_at"`
-CreatedAt    time.Time `json:"created_at"`
-UpdatedAt    time.Time `json:"updated_at"`
+ID           string        `json:"id"`
+Name         string        `json:"name"`
+Payload      []byte        `json:"payload"`
+Status       Status        `json:"status"`
+Priority     int           `json:"priority"`
+MaxRetries   int           `json:"max_retries"`
+CurrentRetry int           `json:"current_retry"`
+LastError    string        `json:"last_error"`
+ScheduledAt  time.Time     `json:"scheduled_at"`
+CreatedAt    time.Time     `json:"created_at"`
+UpdatedAt    time.Time     `json:"updated_at"`
 }
 
 func NewTask(id, name string, payload []byte, priority int) *Task {
@@ -41,4 +43,10 @@ ScheduledAt:  now,
 CreatedAt:    now,
 UpdatedAt:    now,
 }
+}
+
+// NextRetryDelay calculates exponential backoff: base * 2^retry seconds
+func (t *Task) NextRetryDelay() time.Duration {
+backoff := math.Pow(2, float64(t.CurrentRetry))
+return time.Duration(backoff) * time.Second
 }
