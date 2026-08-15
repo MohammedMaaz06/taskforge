@@ -1,0 +1,5 @@
+taskforge.exe
+taskforge.db
+*.db-journal
+*.db-wal
+*.db-shm
