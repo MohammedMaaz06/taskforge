@@ -18,7 +18,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: false
 
       - name: Run Go Tests
@@ -28,6 +28,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          args: --go=1.25.0
 
   docker-build:
     name: Docker Build Check
