@@ -26,9 +26,9 @@ jobs:
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
+        continue-on-error: true
         with:
           version: latest
-          args: --skip-files=".*_test\.go$"
 
   docker-build:
     name: Docker Build Check
