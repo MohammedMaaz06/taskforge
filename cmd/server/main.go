@@ -2,9 +2,11 @@ package main
 
 import (
 "encoding/json"
+"errors"
 "fmt"
 "net/http"
 "os"
+"strings"
 "time"
 
 "taskforge/internal/scheduler"
@@ -38,11 +40,7 @@ _ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 })
 
 http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
-if r.Method != http.MethodPost {
-http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-return
-}
-
+if r.Method == http.MethodPost {
 var req struct {
 Name     string `json:"name"`
 Payload  string `json:"payload"`
@@ -65,6 +63,37 @@ wp.Submit(tsk)
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusCreated)
 _ = json.NewEncoder(w).Encode(tsk)
+return
+}
+
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+})
+
+http.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
+id := strings.TrimPrefix(r.URL.Path, "/tasks/")
+if id == "" {
+http.Error(w, "Task ID required", http.StatusBadRequest)
+return
+}
+
+if r.Method == http.MethodGet {
+tsk, err := st.Get(id)
+if errors.Is(err, store.ErrTaskNotFound) {
+http.Error(w, "Task not found", http.StatusNotFound)
+return
+}
+if err != nil {
+http.Error(w, "Database error", http.StatusInternalServerError)
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
+_ = json.NewEncoder(w).Encode(tsk)
+return
+}
+
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 })
 
 port := os.Getenv("PORT")

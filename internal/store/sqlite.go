@@ -14,12 +14,12 @@ db *sql.DB
 }
 
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)")
+db, err := sql.Open("sqlite", dbPath)
 if err != nil {
-return nil, fmt.Errorf("failed to open sqlite db: %w", err)
+return nil, fmt.Errorf("failed to open database: %w", err)
 }
 
-schema := `
+query := `
 CREATE TABLE IF NOT EXISTS tasks (
 id TEXT PRIMARY KEY,
 name TEXT NOT NULL,
@@ -29,13 +29,13 @@ priority INTEGER NOT NULL,
 max_retries INTEGER NOT NULL,
 current_retry INTEGER NOT NULL,
 last_error TEXT,
-scheduled_at DATETIME,
-created_at DATETIME,
-updated_at DATETIME
+scheduled_at DATETIME NOT NULL,
+created_at DATETIME NOT NULL,
+updated_at DATETIME NOT NULL
 );`
 
-if _, err := db.Exec(schema); err != nil {
-return nil, fmt.Errorf("failed to initialize schema: %w", err)
+if _, err := db.Exec(query); err != nil {
+return nil, fmt.Errorf("failed to create tasks table: %w", err)
 }
 
 return &SQLiteStore{db: db}, nil
@@ -51,40 +51,32 @@ current_retry = excluded.current_retry,
 last_error = excluded.last_error,
 updated_at = excluded.updated_at;`
 
-_, err := s.db.Exec(query,
-t.ID, t.Name, t.Payload, string(t.Status), t.Priority,
-t.MaxRetries, t.CurrentRetry, t.LastError,
-t.ScheduledAt, t.CreatedAt, time.Now(),
-)
+_, err := s.db.Exec(query, t.ID, t.Name, t.Payload, t.Status, t.Priority, t.MaxRetries, t.CurrentRetry, t.LastError, t.ScheduledAt, t.CreatedAt, t.UpdatedAt)
 return err
 }
 
 func (s *SQLiteStore) Get(id string) (*task.Task, error) {
 query := `SELECT id, name, payload, status, priority, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at FROM tasks WHERE id = ?`
-
 row := s.db.QueryRow(query, id)
 
 var t task.Task
-var statusStr string
-
-err := row.Scan(
-&t.ID, &t.Name, &t.Payload, &statusStr, &t.Priority,
-&t.MaxRetries, &t.CurrentRetry, &t.LastError,
-&t.ScheduledAt, &t.CreatedAt, &t.UpdatedAt,
-)
+err := row.Scan(&t.ID, &t.Name, &t.Payload, &t.Status, &t.Priority, &t.MaxRetries, &t.CurrentRetry, &t.LastError, &t.ScheduledAt, &t.CreatedAt, &t.UpdatedAt)
 if err == sql.ErrNoRows {
 return nil, ErrTaskNotFound
-} else if err != nil {
+}
+if err != nil {
 return nil, err
 }
-
-t.Status = task.Status(statusStr)
 return &t, nil
 }
 
-func (s *SQLiteStore) UpdateStatus(id string, status task.Status, errMessage string) error {
+func (s *SQLiteStore) GetByID(id string) (*task.Task, error) {
+return s.Get(id)
+}
+
+func (s *SQLiteStore) UpdateStatus(id string, status task.Status, errMsg string) error {
 query := `UPDATE tasks SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`
-_, err := s.db.Exec(query, string(status), errMessage, time.Now(), id)
+_, err := s.db.Exec(query, status, errMsg, time.Now().UTC(), id)
 return err
 }
 
