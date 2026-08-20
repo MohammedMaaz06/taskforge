@@ -84,12 +84,53 @@ http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 })
 
 http.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
-id := strings.TrimPrefix(r.URL.Path, "/tasks/")
-if id == "" {
+path := strings.TrimPrefix(r.URL.Path, "/tasks/")
+if path == "" {
 http.Error(w, "Task ID required", http.StatusBadRequest)
 return
 }
 
+parts := strings.Split(path, "/")
+id := parts[0]
+
+// Handle POST /tasks/{id}/cancel
+if len(parts) == 2 && parts[1] == "cancel" {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+tsk, err := st.Get(id)
+if errors.Is(err, store.ErrTaskNotFound) {
+http.Error(w, "Task not found", http.StatusNotFound)
+return
+}
+if err != nil {
+http.Error(w, "Database error", http.StatusInternalServerError)
+return
+}
+
+if tsk.Status != task.StatusPending {
+http.Error(w, fmt.Sprintf("cannot cancel task in %s status", tsk.Status), http.StatusBadRequest)
+return
+}
+
+if err := st.UpdateStatus(id, task.StatusFailed, "task cancelled by user"); err != nil {
+http.Error(w, "Failed to cancel task", http.StatusInternalServerError)
+return
+}
+
+tsk.Status = task.StatusFailed
+tsk.LastError = "task cancelled by user"
+
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
+_ = json.NewEncoder(w).Encode(tsk)
+return
+}
+
+// Handle GET /tasks/{id}
+if len(parts) == 1 {
 if r.Method == http.MethodGet {
 tsk, err := st.Get(id)
 if errors.Is(err, store.ErrTaskNotFound) {
@@ -105,6 +146,7 @@ w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusOK)
 _ = json.NewEncoder(w).Encode(tsk)
 return
+}
 }
 
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
