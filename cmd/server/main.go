@@ -40,6 +40,20 @@ _ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 })
 
 http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
+if r.Method == http.MethodGet {
+statusFilter := strings.ToUpper(r.URL.Query().Get("status"))
+tasks, err := st.List(statusFilter)
+if err != nil {
+http.Error(w, "Failed to retrieve tasks", http.StatusInternalServerError)
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
+_ = json.NewEncoder(w).Encode(tasks)
+return
+}
+
 if r.Method == http.MethodPost {
 var req struct {
 Name     string `json:"name"`

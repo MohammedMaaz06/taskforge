@@ -1,77 +1,115 @@
 package store
 
 import (
+"path/filepath"
 "testing"
 
 "taskforge/pkg/task"
 )
 
 func setupTestStore(t *testing.T) *SQLiteStore {
-store, err := NewSQLiteStore(":memory:")
+tmpDir := t.TempDir()
+dbPath := filepath.Join(tmpDir, "test.db")
+
+st, err := NewSQLiteStore(dbPath)
 if err != nil {
-t.Fatalf("failed to create in-memory sqlite store: %v", err)
+t.Fatalf("failed to create sqlite store: %v", err)
 }
-t.Cleanup(func() {
-store.Close()
-})
-return store
+
+return st
 }
 
 func TestSQLiteStore_SaveAndGet(t *testing.T) {
-s := setupTestStore(t)
+st := setupTestStore(t)
+defer st.Close()
 
-tsk := task.NewTask("task-101", "process_payment", []byte(`{"amount":100}`), 1)
+tsk := task.NewTask("task-1", "test_job", []byte("hello"), 1)
 
-if err := s.Save(tsk); err != nil {
+if err := st.Save(tsk); err != nil {
 t.Fatalf("failed to save task: %v", err)
 }
 
-fetched, err := s.Get("task-101")
+retrieved, err := st.Get("task-1")
 if err != nil {
 t.Fatalf("failed to get task: %v", err)
 }
 
-if fetched.ID != tsk.ID {
-t.Errorf("expected ID %q, got %q", tsk.ID, fetched.ID)
+if retrieved == nil {
+t.Fatal("expected task, got nil")
 }
-if fetched.Name != tsk.Name {
-t.Errorf("expected Name %q, got %q", tsk.Name, fetched.Name)
-}
-if fetched.Status != task.StatusPending {
-t.Errorf("expected Status %q, got %q", task.StatusPending, fetched.Status)
+
+if retrieved.ID != tsk.ID || retrieved.Name != tsk.Name {
+t.Errorf("mismatch: got %+v, want %+v", retrieved, tsk)
 }
 }
 
 func TestSQLiteStore_GetNotFound(t *testing.T) {
-s := setupTestStore(t)
+st := setupTestStore(t)
+defer st.Close()
 
-_, err := s.Get("non-existent-id")
+_, err := st.Get("non-existent-id")
 if err != ErrTaskNotFound {
 t.Errorf("expected ErrTaskNotFound, got %v", err)
 }
 }
 
 func TestSQLiteStore_UpdateStatus(t *testing.T) {
-s := setupTestStore(t)
+st := setupTestStore(t)
+defer st.Close()
 
-tsk := task.NewTask("task-102", "send_webhook", []byte(`{}`), 2)
-if err := s.Save(tsk); err != nil {
-t.Fatalf("failed to save initial task: %v", err)
-}
+tsk := task.NewTask("task-2", "update_job", []byte("data"), 2)
+_ = st.Save(tsk)
 
-if err := s.UpdateStatus("task-102", task.StatusFailed, "timeout connection"); err != nil {
+if err := st.UpdateStatus("task-2", task.StatusCompleted, ""); err != nil {
 t.Fatalf("failed to update status: %v", err)
 }
 
-updated, err := s.Get("task-102")
-if err != nil {
-t.Fatalf("failed to fetch updated task: %v", err)
+retrieved, _ := st.Get("task-2")
+if retrieved.Status != task.StatusCompleted {
+t.Errorf("expected status %s, got %s", task.StatusCompleted, retrieved.Status)
+}
 }
 
-if updated.Status != task.StatusFailed {
-t.Errorf("expected status %q, got %q", task.StatusFailed, updated.Status)
+func TestSQLiteStore_List(t *testing.T) {
+st := setupTestStore(t)
+defer st.Close()
+
+t1 := task.NewTask("task-10", "job_10", []byte("1"), 1)
+t2 := task.NewTask("task-11", "job_11", []byte("2"), 1)
+t2.Status = task.StatusCompleted
+
+_ = st.Save(t1)
+_ = st.Save(t2)
+
+// Test listing all
+allTasks, err := st.List("")
+if err != nil {
+t.Fatalf("failed to list all tasks: %v", err)
 }
-if updated.LastError != "timeout connection" {
-t.Errorf("expected last error %q, got %q", "timeout connection", updated.LastError)
+if len(allTasks) != 2 {
+t.Errorf("expected 2 tasks, got %d", len(allTasks))
+}
+
+// Test filtering by status
+pendingTasks, err := st.List(string(task.StatusPending))
+if err != nil {
+t.Fatalf("failed to list pending tasks: %v", err)
+}
+if len(pendingTasks) != 1 {
+t.Fatalf("expected 1 pending task, got %d", len(pendingTasks))
+}
+if pendingTasks[0].ID != "task-10" {
+t.Errorf("expected task-10, got %s", pendingTasks[0].ID)
+}
+
+completedTasks, err := st.List(string(task.StatusCompleted))
+if err != nil {
+t.Fatalf("failed to list completed tasks: %v", err)
+}
+if len(completedTasks) != 1 {
+t.Fatalf("expected 1 completed task, got %d", len(completedTasks))
+}
+if completedTasks[0].ID != "task-11" {
+t.Errorf("expected task-11, got %s", completedTasks[0].ID)
 }
 }

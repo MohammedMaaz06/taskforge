@@ -74,6 +74,35 @@ func (s *SQLiteStore) GetByID(id string) (*task.Task, error) {
 return s.Get(id)
 }
 
+func (s *SQLiteStore) List(statusFilter string) ([]*task.Task, error) {
+var query string
+var args []interface{}
+
+if statusFilter != "" {
+query = `SELECT id, name, payload, status, priority, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at FROM tasks WHERE status = ? ORDER BY created_at DESC`
+args = append(args, statusFilter)
+} else {
+query = `SELECT id, name, payload, status, priority, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at FROM tasks ORDER BY created_at DESC`
+}
+
+rows, err := s.db.Query(query, args...)
+if err != nil {
+return nil, err
+}
+defer rows.Close()
+
+tasks := []*task.Task{}
+for rows.Next() {
+var t task.Task
+if err := rows.Scan(&t.ID, &t.Name, &t.Payload, &t.Status, &t.Priority, &t.MaxRetries, &t.CurrentRetry, &t.LastError, &t.ScheduledAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+return nil, err
+}
+tasks = append(tasks, &t)
+}
+
+return tasks, rows.Err()
+}
+
 func (s *SQLiteStore) UpdateStatus(id string, status task.Status, errMsg string) error {
 query := `UPDATE tasks SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`
 _, err := s.db.Exec(query, status, errMsg, time.Now().UTC(), id)
