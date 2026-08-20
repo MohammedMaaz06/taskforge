@@ -9,6 +9,9 @@ import (
 "strings"
 "time"
 
+"github.com/prometheus/client_golang/prometheus/promhttp"
+
+"taskforge/internal/metrics"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
 "taskforge/internal/worker"
@@ -32,6 +35,9 @@ dlq := scheduler.NewDLQ()
 wp := worker.NewWorkerPool(3, 10, dlq)
 wp.Start()
 defer wp.Stop()
+
+// Expose Prometheus metrics endpoint
+http.Handle("/metrics", promhttp.Handler())
 
 http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
@@ -73,6 +79,7 @@ return
 }
 
 wp.Submit(tsk)
+metrics.TasksProcessed.WithLabelValues("submitted").Inc()
 
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusCreated)
@@ -93,7 +100,6 @@ return
 parts := strings.Split(path, "/")
 id := parts[0]
 
-// Handle POST /tasks/{id}/cancel
 if len(parts) == 2 && parts[1] == "cancel" {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -122,6 +128,7 @@ return
 
 tsk.Status = task.StatusFailed
 tsk.LastError = "task cancelled by user"
+metrics.TasksProcessed.WithLabelValues("cancelled").Inc()
 
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusOK)
@@ -129,7 +136,6 @@ _ = json.NewEncoder(w).Encode(tsk)
 return
 }
 
-// Handle GET /tasks/{id}
 if len(parts) == 1 {
 if r.Method == http.MethodGet {
 tsk, err := st.Get(id)

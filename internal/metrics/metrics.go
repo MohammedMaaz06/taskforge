@@ -1,36 +1,56 @@
 package metrics
 
 import (
-	"fmt"
-	"net/http"
-	"sync/atomic"
+"github.com/prometheus/client_golang/prometheus"
+"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-type Telemetry struct {
-	SubmittedTasks int64
-	CompletedTasks int64
-	FailedTasks    int64
-	ActiveWorkers  int64
+var (
+TasksProcessed = promauto.NewCounterVec(
+prometheus.CounterOpts{
+Name: "taskforge_tasks_processed_total",
+Help: "The total number of processed tasks",
+},
+[]string{"status"},
+)
+
+TaskDuration = promauto.NewHistogramVec(
+prometheus.HistogramOpts{
+Name:    "taskforge_task_duration_seconds",
+Help:    "Task execution duration in seconds",
+Buckets: prometheus.DefBuckets,
+},
+[]string{"task_name"},
+)
+
+ActiveWorkers = promauto.NewGauge(
+prometheus.GaugeOpts{
+Name: "taskforge_active_workers",
+Help: "Current number of active worker goroutines",
+},
+)
+)
+
+type Metrics struct {
+TasksProcessed *prometheus.CounterVec
+TaskDuration   *prometheus.HistogramVec
+ActiveWorkers  prometheus.Gauge
 }
 
-var Global = &Telemetry{}
+func (m *Metrics) IncFailed() {
+m.TasksProcessed.WithLabelValues("failed").Inc()
+}
 
-func (t *Telemetry) IncSubmitted() { atomic.AddInt64(&t.SubmittedTasks, 1) }
-func (t *Telemetry) IncCompleted() { atomic.AddInt64(&t.CompletedTasks, 1) }
-func (t *Telemetry) IncFailed()    { atomic.AddInt64(&t.FailedTasks, 1) }
+func (m *Metrics) IncCompleted() {
+m.TasksProcessed.WithLabelValues("completed").Inc()
+}
 
-// Handler exposes Prometheus-style plain text metrics at /metrics
-func (t *Telemetry) Handler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fmt.Fprintf(w, "# HELP taskforge_tasks_submitted_total Total submitted tasks\n")
-	fmt.Fprintf(w, "# TYPE taskforge_tasks_submitted_total counter\n")
-	fmt.Fprintf(w, "taskforge_tasks_submitted_total %d\n\n", atomic.LoadInt64(&t.SubmittedTasks))
+func (m *Metrics) IncSubmitted() {
+m.TasksProcessed.WithLabelValues("submitted").Inc()
+}
 
-	fmt.Fprintf(w, "# HELP taskforge_tasks_completed_total Total successfully completed tasks\n")
-	fmt.Fprintf(w, "# TYPE taskforge_tasks_completed_total counter\n")
-	fmt.Fprintf(w, "taskforge_tasks_completed_total %d\n\n", atomic.LoadInt64(&t.CompletedTasks))
-
-	fmt.Fprintf(w, "# HELP taskforge_tasks_failed_total Total failed tasks routed to DLQ\n")
-	fmt.Fprintf(w, "# TYPE taskforge_tasks_failed_total counter\n")
-	fmt.Fprintf(w, "taskforge_tasks_failed_total %d\n", atomic.LoadInt64(&t.FailedTasks))
+var Global = &Metrics{
+TasksProcessed: TasksProcessed,
+TaskDuration:   TaskDuration,
+ActiveWorkers:  ActiveWorkers,
 }
