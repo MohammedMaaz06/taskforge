@@ -1,17 +1,27 @@
-﻿FROM golang:1.25-alpine AS builder
+# Build stage
+FROM golang:1.22-alpine AS builder
+
 WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache gcc musl-dev
+
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o taskforge ./cmd/server
 
-FROM alpine:3.20
-RUN apk --no-cache add ca-certificates tzdata
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/server ./cmd/server
+
+# Final runtime stage
+FROM alpine:3.19
+
 WORKDIR /app
-RUN adduser -D -g '' taskuser && \
-    mkdir -p /app/data && \
-    chown -R taskuser:taskuser /app
-USER taskuser
-COPY --from=builder /app/taskforge .
+
+RUN apk add --no-cache ca-certificates
+
+COPY --from=builder /app/server /app/server
+
 EXPOSE 8080
-ENTRYPOINT ["./taskforge"]
+
+CMD ["/app/server"]
