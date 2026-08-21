@@ -1,12 +1,15 @@
 package main
 
 import (
+"context"
 "encoding/json"
 "errors"
 "fmt"
 "net/http"
 "os"
+"os/signal"
 "strings"
+"syscall"
 "time"
 
 "github.com/prometheus/client_golang/prometheus/promhttp"
@@ -29,23 +32,23 @@ if err != nil {
 fmt.Printf("Failed to initialize database: %v\n", err)
 os.Exit(1)
 }
-defer st.Close()
 
 dlq := scheduler.NewDLQ()
 wp := worker.NewWorkerPool(3, 10, dlq)
 wp.Start()
-defer wp.Stop()
+
+mux := http.NewServeMux()
 
 // Expose Prometheus metrics endpoint
-http.Handle("/metrics", promhttp.Handler())
+mux.Handle("/metrics", promhttp.Handler())
 
-http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusOK)
 _ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 })
 
-http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
 if r.Method == http.MethodGet {
 statusFilter := strings.ToUpper(r.URL.Query().Get("status"))
 tasks, err := st.List(statusFilter)
@@ -90,7 +93,7 @@ return
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 })
 
-http.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("/tasks/", func(w http.ResponseWriter, r *http.Request) {
 path := strings.TrimPrefix(r.URL.Path, "/tasks/")
 if path == "" {
 http.Error(w, "Task ID required", http.StatusBadRequest)
@@ -163,8 +166,41 @@ if port == "" {
 port = "8080"
 }
 
-fmt.Printf("TaskForge server starting on port %s...\n", port)
-if err := http.ListenAndServe(":"+port, nil); err != nil {
-fmt.Printf("Server failed: %v\n", err)
+server := &http.Server{
+Addr:    ":" + port,
+Handler: mux,
 }
+
+stop := make(chan os.Signal, 1)
+signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+go func() {
+fmt.Printf("TaskForge server starting on port %s...\n", port)
+if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+fmt.Printf("Server unexpected error: %v\n", err)
+}
+}()
+
+<-stop
+fmt.Println("\nShutdown signal received. Shutting down gracefully...")
+
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+defer cancel()
+
+if err := server.Shutdown(ctx); err != nil {
+fmt.Printf("HTTP server forced shutdown error: %v\n", err)
+} else {
+fmt.Println("HTTP server stopped gracefully.")
+}
+
+wp.Stop()
+fmt.Println("Worker pool stopped.")
+
+if err := st.Close(); err != nil {
+fmt.Printf("Error closing database: %v\n", err)
+} else {
+fmt.Println("Database connection closed.")
+}
+
+fmt.Println("TaskForge shutdown complete.")
 }
