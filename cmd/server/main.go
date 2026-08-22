@@ -39,6 +39,9 @@ wp.Start()
 
 mux := http.NewServeMux()
 
+// Serve Static Dashboard UI
+mux.Handle("/", http.FileServer(http.Dir("./web")))
+
 // Expose Prometheus metrics endpoint
 mux.Handle("/metrics", promhttp.Handler())
 
