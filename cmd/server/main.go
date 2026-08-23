@@ -17,6 +17,7 @@ import (
 "taskforge/internal/metrics"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
+"taskforge/internal/websocket"
 "taskforge/internal/worker"
 "taskforge/pkg/task"
 )
@@ -33,17 +34,19 @@ fmt.Printf("Failed to initialize database: %v\n", err)
 os.Exit(1)
 }
 
+hub := websocket.NewHub()
+go hub.Run()
+
 dlq := scheduler.NewDLQ()
 wp := worker.NewWorkerPool(3, 10, dlq)
 wp.Start()
 
 mux := http.NewServeMux()
 
-// Serve Static Dashboard UI
 mux.Handle("/", http.FileServer(http.Dir("./web")))
-
-// Expose Prometheus metrics endpoint
 mux.Handle("/metrics", promhttp.Handler())
+
+mux.HandleFunc("/ws", hub.HandleWS)
 
 mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
@@ -86,6 +89,8 @@ return
 
 wp.Submit(tsk)
 metrics.TasksProcessed.WithLabelValues("submitted").Inc()
+
+hub.Broadcast("TASK_CREATED", tsk)
 
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusCreated)
@@ -136,14 +141,15 @@ tsk.Status = task.StatusFailed
 tsk.LastError = "task cancelled by user"
 metrics.TasksProcessed.WithLabelValues("cancelled").Inc()
 
+hub.Broadcast("TASK_CANCELLED", tsk)
+
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusOK)
 _ = json.NewEncoder(w).Encode(tsk)
 return
 }
 
-if len(parts) == 1 {
-if r.Method == http.MethodGet {
+if len(parts) == 1 && r.Method == http.MethodGet {
 tsk, err := st.Get(id)
 if errors.Is(err, store.ErrTaskNotFound) {
 http.Error(w, "Task not found", http.StatusNotFound)
@@ -158,7 +164,6 @@ w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusOK)
 _ = json.NewEncoder(w).Encode(tsk)
 return
-}
 }
 
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -190,20 +195,8 @@ fmt.Println("\nShutdown signal received. Shutting down gracefully...")
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
-if err := server.Shutdown(ctx); err != nil {
-fmt.Printf("HTTP server forced shutdown error: %v\n", err)
-} else {
-fmt.Println("HTTP server stopped gracefully.")
-}
-
+_ = server.Shutdown(ctx)
 wp.Stop()
-fmt.Println("Worker pool stopped.")
-
-if err := st.Close(); err != nil {
-fmt.Printf("Error closing database: %v\n", err)
-} else {
-fmt.Println("Database connection closed.")
-}
-
+_ = st.Close()
 fmt.Println("TaskForge shutdown complete.")
 }
