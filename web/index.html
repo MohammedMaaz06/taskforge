@@ -48,12 +48,17 @@
         <div class="w-10 h-10 bg-nexus-cyan/10 border border-nexus-cyan flex items-center justify-center font-orbitron font-extrabold text-xl text-nexus-cyan clip-corner">TF</div>
         <div>
           <h1 class="font-orbitron font-black text-2xl text-white">TASK<span class="text-nexus-cyan glow-cyan">FORGE</span></h1>
-          <p class="text-xs text-slate-400">REALTIME WEBSOCKET STREAM</p>
+          <p class="text-xs text-slate-400">DLQ INSPECTOR & REALTIME WEBSOCKET STREAM</p>
         </div>
       </div>
-      <div class="flex items-center space-x-3 bg-nexus-void px-4 py-2 border border-nexus-border rounded">
-        <span id="ws-indicator" class="h-3 w-3 rounded-full bg-nexus-magenta"></span>
-        <span id="ws-status" class="text-xs font-orbitron text-nexus-magenta">CONNECTING...</span>
+      <div class="flex items-center space-x-4">
+        <button onclick="fetchDLQ()" class="px-3 py-1.5 bg-nexus-magenta/20 border border-nexus-magenta text-nexus-magenta text-xs font-orbitron hover:bg-nexus-magenta/40 rounded">
+          INSPECT DLQ
+        </button>
+        <div class="flex items-center space-x-3 bg-nexus-void px-4 py-2 border border-nexus-border rounded">
+          <span id="ws-indicator" class="h-3 w-3 rounded-full bg-nexus-magenta"></span>
+          <span id="ws-status" class="text-xs font-orbitron text-nexus-magenta">CONNECTING...</span>
+        </div>
       </div>
     </div>
   </header>
@@ -91,6 +96,23 @@
         </div>
       </div>
 
+    </div>
+
+    <!-- DLQ PANEL -->
+    <div id="dlqPanel" class="hud-glass p-6 rounded-lg clip-corner space-y-4 hidden">
+      <h2 class="font-orbitron font-bold text-nexus-magenta text-lg">&gt; DEAD LETTER QUEUE (DLQ) REPOSITORY</h2>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="border-b border-nexus-border text-slate-400 font-orbitron">
+              <th class="p-3">Task ID / Name</th>
+              <th class="p-3">Last Error</th>
+              <th class="p-3 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="dlqTableBody" class="divide-y divide-nexus-border/40 font-mono"></tbody>
+        </table>
+      </div>
     </div>
   </main>
 
@@ -151,6 +173,35 @@
           </td>
         </tr>
       `).join('');
+    }
+
+    async function fetchDLQ() {
+      const panel = document.getElementById('dlqPanel');
+      panel.classList.toggle('hidden');
+      const res = await fetch('/dlq');
+      const dlqTasks = await res.json() || [];
+      const tbody = document.getElementById('dlqTableBody');
+
+      if (dlqTasks.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="3" class="p-4 text-center text-slate-500">DLQ is clear. No failed tasks.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = dlqTasks.map(t => `
+        <tr>
+          <td class="p-3"><div class="font-bold text-white">${t.name}</div><div class="text-[10px] text-slate-500">${t.id}</div></td>
+          <td class="p-3 text-nexus-magenta text-xs">${t.last_error || 'Execution aborted'}</td>
+          <td class="p-3 text-right">
+            <button onclick="retryDLQTask('${t.id}')" class="px-2 py-1 bg-nexus-green/20 border border-nexus-green text-nexus-green text-[10px] font-orbitron rounded">RETRY</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    async function retryDLQTask(id) {
+      await fetch(`/dlq/retry/${id}`, { method: 'POST' });
+      fetchDLQ();
+      fetchTasks();
     }
 
     async function submitTask(e) {
