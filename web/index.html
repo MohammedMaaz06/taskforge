@@ -1,229 +1,94 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TASKFORGE // REALTIME NEURAL NEXUS</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            orbitron: ['Orbitron', 'sans-serif'],
-            mono: ['Share Tech Mono', 'monospace'],
-          },
-          colors: {
-            nexus: {
-              void: '#030509',
-              dark: '#080d1a',
-              card: '#0d1527',
-              border: '#1b2a4a',
-              cyan: '#00f0ff',
-              magenta: '#ff0055',
-              green: '#00ffaa',
-              yellow: '#ffcc00'
-            }
-          }
-        }
-      }
-    }
-  </script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TaskForge - Real-Time Dashboard</title>
   <style>
-    body { background-color: #030509; color: #cbd5e1; overflow-x: hidden; }
-    .hud-glass { background: rgba(13, 21, 39, 0.75); backdrop-filter: blur(12px); border: 1px solid rgba(0, 240, 255, 0.2); }
-    .glow-cyan { text-shadow: 0 0 10px rgba(0, 240, 255, 0.8); }
-    .clip-corner { clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 12px 100%, 0 calc(100% - 12px)); }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; padding: 20px; }
+    header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; border-bottom: 1px solid #334155; margin-bottom: 24px; }
+    h1 { font-size: 1.5rem; font-weight: 700; color: #38bdf8; }
+    .status-badge { padding: 6px 12px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; background: #1e293b; color: #94a3b8; }
+    .status-badge.connected { background: #065f46; color: #34d399; }
+    
+    .grid { display: grid; grid-template-columns: 320px 1fr; gap: 24px; }
+    .card { background: #1e293b; border-radius: 8px; border: 1px solid #334155; padding: 20px; }
+    .card h2 { font-size: 1.1rem; margin-bottom: 16px; color: #cbd5e1; }
+    
+    form { display: flex; flex-direction: column; gap: 12px; }
+    label { font-size: 0.85rem; color: #94a3b8; }
+    input, select, button { padding: 10px; border-radius: 6px; border: 1px solid #475569; background: #0f172a; color: #f8fafc; font-size: 0.9rem; }
+    button { background: #0284c7; border: none; font-weight: 600; cursor: pointer; transition: background 0.2s; margin-top: 8px; }
+    button:hover { background: #0369a1; }
+    
+    .metrics-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 24px; }
+    .metric-card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 16px; text-align: center; }
+    .metric-card .value { font-size: 1.8rem; font-weight: 700; color: #f8fafc; margin-top: 4px; }
+    
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
+    th { padding: 12px; color: #94a3b8; border-bottom: 1px solid #334155; font-weight: 600; }
+    td { padding: 12px; border-bottom: 1px solid #334155; }
+    
+    .state { padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+    .state-PENDING { background: #334155; color: #cbd5e1; }
+    .state-RUNNING { background: #854d0e; color: #fde047; }
+    .state-COMPLETED { background: #065f46; color: #34d399; }
+    .state-FAILED { background: #991b1b; color: #fca5a5; }
   </style>
 </head>
-<body class="font-mono text-slate-300 min-h-screen flex flex-col justify-between">
-
-  <header class="border-b border-nexus-border bg-nexus-dark/90 backdrop-blur-md sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-      <div class="flex items-center space-x-4">
-        <div class="w-10 h-10 bg-nexus-cyan/10 border border-nexus-cyan flex items-center justify-center font-orbitron font-extrabold text-xl text-nexus-cyan clip-corner">TF</div>
-        <div>
-          <h1 class="font-orbitron font-black text-2xl text-white">TASK<span class="text-nexus-cyan glow-cyan">FORGE</span></h1>
-          <p class="text-xs text-slate-400">DLQ INSPECTOR & REALTIME WEBSOCKET STREAM</p>
-        </div>
-      </div>
-      <div class="flex items-center space-x-4">
-        <button onclick="fetchDLQ()" class="px-3 py-1.5 bg-nexus-magenta/20 border border-nexus-magenta text-nexus-magenta text-xs font-orbitron hover:bg-nexus-magenta/40 rounded">
-          INSPECT DLQ
-        </button>
-        <div class="flex items-center space-x-3 bg-nexus-void px-4 py-2 border border-nexus-border rounded">
-          <span id="ws-indicator" class="h-3 w-3 rounded-full bg-nexus-magenta"></span>
-          <span id="ws-status" class="text-xs font-orbitron text-nexus-magenta">CONNECTING...</span>
-        </div>
-      </div>
-    </div>
+<body>
+  <header>
+    <h1>TaskForge Dashboard</h1>
+    <div id="ws-status" class="status-badge">Connecting WebSocket...</div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-6 py-8 flex-1 w-full space-y-8">
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-      
-      <!-- SUBMIT FORM -->
-      <div class="hud-glass p-6 rounded-lg clip-corner space-y-4">
-        <h2 class="font-orbitron font-bold text-white text-lg">&gt; DISPATCH TASK</h2>
-        <form onsubmit="submitTask(event)" class="space-y-4">
-          <input type="text" id="taskName" required placeholder="Task Name" class="w-full bg-nexus-void border border-nexus-border text-nexus-cyan px-3 py-2 text-sm rounded focus:outline-none"/>
-          <textarea id="taskPayload" rows="3" required placeholder='{"payload": "data"}' class="w-full bg-nexus-void border border-nexus-border text-nexus-cyan px-3 py-2 text-xs rounded focus:outline-none"></textarea>
-          <input type="range" id="taskPriority" min="1" max="10" value="1" class="w-full accent-nexus-cyan bg-nexus-void"/>
-          <button type="submit" class="w-full py-3 bg-nexus-cyan/10 border border-nexus-cyan text-nexus-cyan font-orbitron text-xs uppercase clip-corner">? DISPATCH</button>
-        </form>
-        <div id="terminal-log" class="bg-nexus-void border border-nexus-border p-3 h-32 overflow-y-auto font-mono text-[11px] space-y-1 rounded"></div>
-      </div>
+  <div class="metrics-summary">
+    <div class="metric-card"><div>Total Submitted</div><div id="m-submitted" class="value">0</div></div>
+    <div class="metric-card"><div>Active Workers</div><div id="m-active" class="value">3</div></div>
+    <div class="metric-card"><div>Completed</div><div id="m-completed" class="value">0</div></div>
+    <div class="metric-card"><div>Failed / DLQ</div><div id="m-failed" class="value">0</div></div>
+  </div>
 
-      <!-- WORKLOAD MATRIX -->
-      <div class="lg:col-span-2 hud-glass p-6 rounded-lg clip-corner space-y-4">
-        <h2 class="font-orbitron font-bold text-white text-lg">&gt; LIVE STREAM MATRIX</h2>
-        <div class="overflow-x-auto">
-          <table class="w-full text-left text-xs">
-            <thead>
-              <tr class="border-b border-nexus-border text-slate-400 font-orbitron">
-                <th class="p-3">ID / Task Name</th>
-                <th class="p-3">Status</th>
-                <th class="p-3">Priority</th>
-                <th class="p-3 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody id="taskTableBody" class="divide-y divide-nexus-border/40 font-mono"></tbody>
-          </table>
+  <div class="grid">
+    <div class="card">
+      <h2>Submit New Task</h2>
+      <form id="task-form">
+        <div>
+          <label>Task Name</label>
+          <input type="text" id="task-name" placeholder="e.g. process_orders" required>
         </div>
-      </div>
-
+        <div>
+          <label>Payload</label>
+          <input type="text" id="task-payload" placeholder="e.g. sample payload" required>
+        </div>
+        <div>
+          <label>Priority (0-10)</label>
+          <input type="number" id="task-priority" value="0" min="0" max="10">
+        </div>
+        <button type="submit">Dispatch Task</button>
+      </form>
     </div>
 
-    <!-- DLQ PANEL -->
-    <div id="dlqPanel" class="hud-glass p-6 rounded-lg clip-corner space-y-4 hidden">
-      <h2 class="font-orbitron font-bold text-nexus-magenta text-lg">&gt; DEAD LETTER QUEUE (DLQ) REPOSITORY</h2>
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs">
-          <thead>
-            <tr class="border-b border-nexus-border text-slate-400 font-orbitron">
-              <th class="p-3">Task ID / Name</th>
-              <th class="p-3">Last Error</th>
-              <th class="p-3 text-right">Action</th>
-            </tr>
-          </thead>
-          <tbody id="dlqTableBody" class="divide-y divide-nexus-border/40 font-mono"></tbody>
-        </table>
-      </div>
+    <div class="card">
+      <h2>Live Execution Log</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Retries</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody id="task-table-body">
+          <tr><td colspan="5" style="text-align:center; color:#64748b;">Loading tasks...</td></tr>
+        </tbody>
+      </table>
     </div>
-  </main>
+  </div>
 
-  <script>
-    let socket;
-
-    function initWebSocket() {
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      socket = new WebSocket(`${protocol}//${location.host}/ws`);
-
-      socket.onopen = () => {
-        document.getElementById('ws-indicator').className = 'h-3 w-3 rounded-full bg-nexus-green';
-        document.getElementById('ws-status').innerText = 'WEBSOCKET LIVE';
-        document.getElementById('ws-status').className = 'text-xs font-orbitron text-nexus-green';
-        logTerminal('<span class="text-nexus-green">[WS] Realtime socket connected.</span>');
-        fetchTasks();
-      };
-
-      socket.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        logTerminal(`<span class="text-nexus-cyan">[EVENT: ${msg.type}] ${msg.payload.name || msg.payload.id}</span>`);
-        fetchTasks();
-      };
-
-      socket.onclose = () => {
-        document.getElementById('ws-indicator').className = 'h-3 w-3 rounded-full bg-nexus-magenta';
-        document.getElementById('ws-status').innerText = 'RECONNECTING...';
-        document.getElementById('ws-status').className = 'text-xs font-orbitron text-nexus-magenta';
-        setTimeout(initWebSocket, 3000);
-      };
-    }
-
-    function logTerminal(msg) {
-      const term = document.getElementById('terminal-log');
-      const entry = document.createElement('div');
-      entry.innerHTML = `<span class="text-slate-500">[${new Date().toLocaleTimeString()}]</span> ${msg}`;
-      term.appendChild(entry);
-      term.scrollTop = term.scrollHeight;
-    }
-
-    async function fetchTasks() {
-      const res = await fetch('/tasks');
-      const tasks = await res.json() || [];
-      const tbody = document.getElementById('taskTableBody');
-
-      if (tasks.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-500 font-orbitron">No active tasks</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = tasks.map(t => `
-        <tr class="hover:bg-nexus-cyan/5">
-          <td class="p-3"><div class="font-bold text-white">${t.name}</div><div class="text-[10px] text-slate-500">${t.id}</div></td>
-          <td class="p-3"><span class="px-2 py-0.5 border text-[10px] rounded ${t.status === 'COMPLETED' ? 'border-nexus-green text-nexus-green' : 'border-nexus-yellow text-nexus-yellow'}">${t.status}</span></td>
-          <td class="p-3 text-nexus-cyan font-bold">${t.priority}</td>
-          <td class="p-3 text-right">
-            ${t.status === 'PENDING' ? `<button onclick="cancelTask('${t.id}')" class="px-2 py-1 bg-nexus-magenta/20 border border-nexus-magenta text-nexus-magenta text-[10px] font-orbitron rounded">ABORT</button>` : '—'}
-          </td>
-        </tr>
-      `).join('');
-    }
-
-    async function fetchDLQ() {
-      const panel = document.getElementById('dlqPanel');
-      panel.classList.toggle('hidden');
-      const res = await fetch('/dlq');
-      const dlqTasks = await res.json() || [];
-      const tbody = document.getElementById('dlqTableBody');
-
-      if (dlqTasks.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="3" class="p-4 text-center text-slate-500">DLQ is clear. No failed tasks.</td></tr>`;
-        return;
-      }
-
-      tbody.innerHTML = dlqTasks.map(t => `
-        <tr>
-          <td class="p-3"><div class="font-bold text-white">${t.name}</div><div class="text-[10px] text-slate-500">${t.id}</div></td>
-          <td class="p-3 text-nexus-magenta text-xs">${t.last_error || 'Execution aborted'}</td>
-          <td class="p-3 text-right">
-            <button onclick="retryDLQTask('${t.id}')" class="px-2 py-1 bg-nexus-green/20 border border-nexus-green text-nexus-green text-[10px] font-orbitron rounded">RETRY</button>
-          </td>
-        </tr>
-      `).join('');
-    }
-
-    async function retryDLQTask(id) {
-      await fetch(`/dlq/retry/${id}`, { method: 'POST' });
-      fetchDLQ();
-      fetchTasks();
-    }
-
-    async function submitTask(e) {
-      e.preventDefault();
-      await fetch('/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: document.getElementById('taskName').value,
-          payload: document.getElementById('taskPayload').value,
-          priority: parseInt(document.getElementById('taskPriority').value)
-        })
-      });
-      document.getElementById('taskName').value = '';
-      document.getElementById('taskPayload').value = '';
-    }
-
-    async function cancelTask(id) {
-      await fetch(`/tasks/${id}/cancel`, { method: 'POST' });
-    }
-
-    initWebSocket();
-  </script>
+  <script src="/app.js"></script>
 </body>
 </html>

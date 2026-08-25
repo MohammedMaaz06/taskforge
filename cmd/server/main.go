@@ -53,6 +53,15 @@ w.WriteHeader(http.StatusOK)
 _ = json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
 })
 
+mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+if r.Method == http.MethodGet {
+w.Header().Set("Content-Type", "application/json")
+_ = json.NewEncoder(w).Encode(wp.GetWorkerStats())
+return
+}
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+})
+
 mux.HandleFunc("/dlq", func(w http.ResponseWriter, r *http.Request) {
 if r.Method == http.MethodGet {
 w.Header().Set("Content-Type", "application/json")
