@@ -2,49 +2,68 @@ package scheduler
 
 import (
 "sync"
+
 "taskforge/pkg/task"
 )
 
 type DeadLetterQueue struct {
 mu    sync.Mutex
-tasks map[string]*task.Task
+tasks []*task.Task
+}
+
+func NewDeadLetterQueue() *DeadLetterQueue {
+return &DeadLetterQueue{
+tasks: make([]*task.Task, 0),
+}
 }
 
 func NewDLQ() *DeadLetterQueue {
-return &DeadLetterQueue{
-tasks: make(map[string]*task.Task),
-}
+return NewDeadLetterQueue()
 }
 
-func (d *DeadLetterQueue) Add(t *task.Task) {
-d.mu.Lock()
-defer d.mu.Unlock()
-d.tasks[t.ID] = t
-}
-
-func (d *DeadLetterQueue) Store(t *task.Task, reason string) {
-if t != nil && reason != "" {
+func (dlq *DeadLetterQueue) Store(t *task.Task, reason string) {
+dlq.mu.Lock()
+defer dlq.mu.Unlock()
+if t != nil {
 t.LastError = reason
+t.Status = task.StatusDLQ
 }
-d.Add(t)
-}
-
-func (d *DeadLetterQueue) GetAll() []*task.Task {
-d.mu.Lock()
-defer d.mu.Unlock()
-list := make([]*task.Task, 0, len(d.tasks))
-for _, t := range d.tasks {
-list = append(list, t)
-}
-return list
+dlq.tasks = append(dlq.tasks, t)
 }
 
-func (d *DeadLetterQueue) Remove(id string) (*task.Task, bool) {
-d.mu.Lock()
-defer d.mu.Unlock()
-t, exists := d.tasks[id]
-if exists {
-delete(d.tasks, id)
+func (dlq *DeadLetterQueue) Add(t *task.Task) {
+dlq.Store(t, "")
 }
-return t, exists
+
+func (dlq *DeadLetterQueue) GetTasks() []*task.Task {
+dlq.mu.Lock()
+defer dlq.mu.Unlock()
+result := make([]*task.Task, len(dlq.tasks))
+copy(result, dlq.tasks)
+return result
 }
+
+func (dlq *DeadLetterQueue) GetAll() []*task.Task {
+return dlq.GetTasks()
+}
+
+func (dlq *DeadLetterQueue) Size() int {
+dlq.mu.Lock()
+defer dlq.mu.Unlock()
+return len(dlq.tasks)
+}
+
+func (dlq *DeadLetterQueue) Remove(id string) (*task.Task, bool) {
+dlq.mu.Lock()
+defer dlq.mu.Unlock()
+
+for i, t := range dlq.tasks {
+if t != nil && t.ID == id {
+removedTask := dlq.tasks[i]
+dlq.tasks = append(dlq.tasks[:i], dlq.tasks[i+1:]...)
+return removedTask, true
+}
+}
+return nil, false
+}
+

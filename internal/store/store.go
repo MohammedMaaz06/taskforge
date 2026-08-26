@@ -1,15 +1,18 @@
 package store
 
 import (
-	"errors"
-	"taskforge/pkg/task"
+"errors"
+
+"taskforge/pkg/task"
 )
 
 var ErrTaskNotFound = errors.New("task not found")
 
-type TaskStore interface {
-	Save(t *task.Task) error
-	Get(id string) (*task.Task, error)
-	UpdateStatus(id string, status task.Status, errMessage string) error
-	Close() error
+type Store interface {
+Save(t *task.Task) error
+Get(id string) (*task.Task, error)
+List(statusFilter ...string) ([]*task.Task, error)
+UpdateStatus(id string, status task.Status, lastErr string) error
+Close() error
 }
+
