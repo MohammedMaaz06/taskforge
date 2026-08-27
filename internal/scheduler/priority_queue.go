@@ -2,110 +2,72 @@ package scheduler
 
 import (
 "container/heap"
+"errors"
 "sync"
-"time"
+
+"taskforge/pkg/task"
 )
 
-type Task struct {
-ID           string    `json:"id"`
-Name         string    `json:"name"`
-Payload      string    `json:"payload"`
-Priority     int       `json:"priority"`
-Status       string    `json:"status"`
-MaxRetries   int       `json:"max_retries"`
-CurrentRetry int       `json:"current_retry"`
-CreatedAt    time.Time `json:"created_at"`
-index        int
+var ErrQueueEmpty = errors.New("queue is empty")
+
+type TaskHeap []*task.Task
+
+func (h TaskHeap) Len() int           { return len(h) }
+func (h TaskHeap) Less(i, j int) bool { return h[i].Priority > h[j].Priority }
+func (h TaskHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *TaskHeap) Push(x interface{}) {
+*h = append(*h, x.(*task.Task))
 }
 
-type PriorityQueue []*Task
-
-func (pq PriorityQueue) Len() int { return len(pq) }
-
-func (pq PriorityQueue) Less(i, j int) bool {
-if pq[i].Priority == pq[j].Priority {
-return pq[i].CreatedAt.Before(pq[j].CreatedAt)
-}
-return pq[i].Priority > pq[j].Priority
-}
-
-func (pq PriorityQueue) Swap(i, j int) {
-pq[i], pq[j] = pq[j], pq[i]
-pq[i].index = i
-pq[j].index = j
-}
-
-func (pq *PriorityQueue) Push(x interface{}) {
-n := len(*pq)
-item := x.(*Task)
-item.index = n
-*pq = append(*pq, item)
-}
-
-func (pq *PriorityQueue) Pop() interface{} {
-old := *pq
+func (h *TaskHeap) Pop() interface{} {
+old := *h
 n := len(old)
-item := old[n-1]
-old[n-1] = nil
-item.index = -1
-*pq = old[0 : n-1]
-return item
+x := old[n-1]
+*h = old[0 : n-1]
+return x
 }
 
 type TaskScheduler struct {
-mu    sync.Mutex
-pq    PriorityQueue
-cond  *sync.Cond
-tasks map[string]*Task
+mu sync.Mutex
+pq TaskHeap
 }
 
 func NewTaskScheduler() *TaskScheduler {
 ts := &TaskScheduler{
-pq:    make(PriorityQueue, 0),
-tasks: make(map[string]*Task),
+pq: make(TaskHeap, 0),
 }
-ts.cond = sync.NewCond(&ts.mu)
 heap.Init(&ts.pq)
 return ts
 }
 
-func (ts *TaskScheduler) Submit(task *Task) {
+func (ts *TaskScheduler) Push(t *task.Task) {
 ts.mu.Lock()
 defer ts.mu.Unlock()
-
-task.Status = "PENDING"
-task.CreatedAt = time.Now()
-ts.tasks[task.ID] = task
-heap.Push(&ts.pq, task)
-ts.cond.Signal()
+heap.Push(&ts.pq, t)
 }
 
-func (ts *TaskScheduler) PopNext() *Task {
+func (ts *TaskScheduler) PushTask(t *task.Task) {
+ts.Push(t)
+}
+
+func (ts *TaskScheduler) Pop() (*task.Task, error) {
 ts.mu.Lock()
 defer ts.mu.Unlock()
-
-for ts.pq.Len() == 0 {
-ts.cond.Wait()
+if len(ts.pq) == 0 {
+return nil, ErrQueueEmpty
+}
+item := heap.Pop(&ts.pq).(*task.Task)
+return item, nil
 }
 
-task := heap.Pop(&ts.pq).(*Task)
-task.Status = "RUNNING"
-return task
+func (ts *TaskScheduler) PopTask() (*task.Task, error) {
+return ts.Pop()
 }
 
-func (ts *TaskScheduler) GetTask(id string) (*Task, bool) {
+func (ts *TaskScheduler) Size() int {
 ts.mu.Lock()
 defer ts.mu.Unlock()
-task, exists := ts.tasks[id]
-return task, exists
+return len(ts.pq)
 }
 
-func (ts *TaskScheduler) GetAllTasks() []*Task {
-ts.mu.Lock()
-defer ts.mu.Unlock()
-all := make([]*Task, 0, len(ts.tasks))
-for _, t := range ts.tasks {
-all = append(all, t)
-}
-return all
-}

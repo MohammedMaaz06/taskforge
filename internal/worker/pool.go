@@ -1,155 +1,133 @@
 package worker
 
 import (
+"context"
 "log/slog"
-"os"
 "sync"
-"taskforge/internal/metrics"
+"time"
+
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
 "taskforge/pkg/task"
-"time"
 )
 
-type WorkerState struct {
-ID        int    `json:"id"`
-Busy      bool   `json:"busy"`
-CurrentID string `json:"current_task_id,omitempty"`
+type StatusListener func(t *task.Task, status task.Status)
+
+type Pool struct {
+numWorkers     int
+scheduler      *scheduler.TaskScheduler
+store          store.Store
+dlq            *scheduler.DeadLetterQueue
+statusListener StatusListener
+tasks          chan *task.Task
+wg             sync.WaitGroup
+ctx            context.Context
+cancel         context.CancelFunc
 }
 
-type WorkerPool struct {
-NumWorkers int
-TaskStream chan *task.Task
-DLQ        *scheduler.DeadLetterQueue
-Store      *store.SQLiteStore
-states     map[int]*WorkerState
-stateMu    sync.RWMutex
-wg         sync.WaitGroup
-logger     *slog.Logger
-}
-
-func NewWorkerPool(numWorkers int, bufferSize int, dlq *scheduler.DeadLetterQueue, st *store.SQLiteStore) *WorkerPool {
-logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-states := make(map[int]*WorkerState)
-for i := 1; i <= numWorkers; i++ {
-states[i] = &WorkerState{ID: i, Busy: false}
-}
-
-return &WorkerPool{
-NumWorkers: numWorkers,
-TaskStream: make(chan *task.Task, bufferSize),
-DLQ:        dlq,
-Store:      st,
-states:     states,
-logger:     logger,
+func NewPool(numWorkers int, sched *scheduler.TaskScheduler, st store.Store, dlq *scheduler.DeadLetterQueue, listener StatusListener) *Pool {
+ctx, cancel := context.WithCancel(context.Background())
+return &Pool{
+numWorkers:     numWorkers,
+scheduler:      sched,
+store:          st,
+dlq:            dlq,
+statusListener: listener,
+tasks:          make(chan *task.Task, numWorkers*2),
+ctx:            ctx,
+cancel:         cancel,
 }
 }
 
-func (wp *WorkerPool) Start() {
-for i := 1; i <= wp.NumWorkers; i++ {
-wp.wg.Add(1)
-go wp.worker(i)
-}
-wp.logger.Info("worker pool started", "num_workers", wp.NumWorkers)
-}
-
-func (wp *WorkerPool) setWorkerBusy(id int, busy bool, taskID string) {
-wp.stateMu.Lock()
-defer wp.stateMu.Unlock()
-if w, ok := wp.states[id]; ok {
-w.Busy = busy
-w.CurrentID = taskID
+func (p *Pool) Start() {
+slog.Info("worker pool started", "num_workers", p.numWorkers)
+for i := 1; i <= p.numWorkers; i++ {
+p.wg.Add(1)
+go p.worker(i)
 }
 }
 
-func (wp *WorkerPool) GetWorkerStats() map[string]interface{} {
-wp.stateMu.RLock()
-defer wp.stateMu.RUnlock()
-
-activeCount := 0
-workerDetails := make([]WorkerState, 0, len(wp.states))
-for _, w := range wp.states {
-if w.Busy {
-activeCount++
+func (p *Pool) worker(id int) {
+defer p.wg.Done()
+for {
+select {
+case <-p.ctx.Done():
+slog.Info("worker thread stopped", "worker_id", id)
+return
+default:
+t, err := p.scheduler.Pop()
+if err != nil {
+time.Sleep(100 * time.Millisecond)
+continue
 }
-workerDetails = append(workerDetails, *w)
-}
-
-return map[string]interface{}{
-"total_workers":  wp.NumWorkers,
-"active_workers": activeCount,
-"queue_depth":    len(wp.TaskStream),
-"workers":        workerDetails,
-}
+if t == nil {
+time.Sleep(50 * time.Millisecond)
+continue
 }
 
-func (wp *WorkerPool) worker(id int) {
-defer wp.wg.Done()
-for t := range wp.TaskStream {
-wp.setWorkerBusy(id, true, t.ID)
-wp.executeTask(id, t)
-wp.setWorkerBusy(id, false, "")
+p.processTask(id, t)
 }
-wp.logger.Info("worker thread stopped", "worker_id", id)
+}
 }
 
-func (wp *WorkerPool) executeTask(workerID int, t *task.Task) {
+func (p *Pool) processTask(workerID int, t *task.Task) {
 t.Status = task.StatusRunning
-t.UpdatedAt = time.Now().UTC()
-if wp.Store != nil {
-_ = wp.Store.UpdateStatus(t.ID, task.StatusRunning, "")
-}
-
-wp.logger.Info("processing task",
-"worker_id", workerID,
-"task_id", t.ID,
-"task_name", t.Name,
-"priority", t.Priority,
-"attempt", t.CurrentRetry+1,
-)
-
-if t.Name == "flaky_third_party_api" || string(t.Payload) == "fail" {
 t.CurrentRetry++
+if p.store != nil {
+_ = p.store.UpdateStatus(t.ID, task.StatusRunning, "")
+}
+p.notifyStatus(t, task.StatusRunning)
+
+slog.Info("processing task", "worker_id", workerID, "task_id", t.ID, "task_name", t.Name, "priority", t.Priority, "attempt", t.CurrentRetry)
+
+err := p.execute(t)
+
+if err != nil {
+slog.Error("task execution failed", "worker_id", workerID, "task_id", t.ID, "error", err)
+t.LastError = err.Error()
+
 if t.CurrentRetry < t.MaxRetries {
-delay := t.NextRetryDelay()
-wp.logger.Warn("task execution failed, retrying",
-"task_id", t.ID,
-"retry_delay", delay.String(),
-)
-time.Sleep(delay)
-wp.executeTask(workerID, t)
-return
+t.Status = task.StatusPending
+p.scheduler.Push(t)
+if p.store != nil {
+_ = p.store.UpdateStatus(t.ID, task.StatusPending, t.LastError)
+}
+p.notifyStatus(t, task.StatusPending)
 } else {
-wp.logger.Error("task dead-lettered", "task_id", t.ID, "max_retries", t.MaxRetries)
-t.Status = task.StatusFailed
-t.LastError = "exceeded max execution retries"
-if wp.Store != nil {
-_ = wp.Store.UpdateStatus(t.ID, task.StatusFailed, t.LastError)
+t.Status = task.StatusDLQ
+if p.dlq != nil {
+p.dlq.Store(t, err.Error())
 }
-t.Status = task.StatusDLQ; if wp.Store != nil { _ = wp.Store.Save(t) }; wp.DLQ.Store(t, "exceeded max execution retries")
-metrics.Global.IncFailed()
+if p.store != nil {
+_ = p.store.UpdateStatus(t.ID, task.StatusDLQ, t.LastError)
+}
+p.notifyStatus(t, task.StatusDLQ)
+}
 return
 }
-}
 
-time.Sleep(150 * time.Millisecond)
 t.Status = task.StatusCompleted
-t.UpdatedAt = time.Now().UTC()
-if wp.Store != nil {
-_ = wp.Store.UpdateStatus(t.ID, task.StatusCompleted, "")
+if p.store != nil {
+_ = p.store.UpdateStatus(t.ID, task.StatusCompleted, "")
 }
-metrics.Global.IncCompleted()
-
-wp.logger.Info("task completed successfully", "worker_id", workerID, "task_id", t.ID)
+p.notifyStatus(t, task.StatusCompleted)
+slog.Info("task completed successfully", "worker_id", workerID, "task_id", t.ID)
 }
 
-func (wp *WorkerPool) Submit(t *task.Task) {
-metrics.Global.IncSubmitted()
-wp.TaskStream <- t
+func (p *Pool) execute(t *task.Task) error {
+time.Sleep(100 * time.Millisecond)
+return nil
 }
 
-func (wp *WorkerPool) Stop() {
-close(wp.TaskStream)
-wp.wg.Wait()
-wp.logger.Info("all workers stopped cleanly")
+func (p *Pool) notifyStatus(t *task.Task, status task.Status) {
+if p.statusListener != nil {
+p.statusListener(t, status)
 }
+}
+
+func (p *Pool) Stop() {
+p.cancel()
+p.wg.Wait()
+slog.Info("all workers stopped cleanly")
+}
+

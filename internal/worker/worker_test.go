@@ -9,15 +9,27 @@ import (
 )
 
 func TestWorkerPool(t *testing.T) {
+sched := scheduler.NewTaskScheduler()
 dlq := scheduler.NewDeadLetterQueue()
-// Pass nil for SQLiteStore in unit tests
-pool := NewWorkerPool(2, 10, dlq, nil)
+
+pool := NewPool(2, sched, nil, dlq, nil)
 pool.Start()
-defer pool.Stop()
 
-t1 := task.NewTask("1", "test-task", []byte(`{}`), 5)
-pool.Submit(t1)
+testTask := &task.Task{
+ID:         "1",
+Name:       "test-task",
+Priority:   5,
+MaxRetries: 3,
+}
 
-time.Sleep(100 * time.Millisecond)
+sched.Push(testTask)
+
+time.Sleep(200 * time.Millisecond)
+
+pool.Stop()
+
+if testTask.Status != task.StatusCompleted {
+t.Errorf("Expected status COMPLETED, got %s", testTask.Status)
+}
 }
 
