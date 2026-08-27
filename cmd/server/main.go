@@ -52,6 +52,7 @@ pool:      pool,
 http.HandleFunc("/tasks", server.handleTasks)
 http.HandleFunc("/dlq", server.handleDLQ)
 http.HandleFunc("/ws", wsHub.ServeHTTP)
+http.Handle("/", http.FileServer(http.Dir("./static")))
 
 port := os.Getenv("PORT")
 if port == "" {
