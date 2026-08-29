@@ -6,51 +6,35 @@ import (
 )
 
 var (
-TasksProcessed = promauto.NewCounterVec(
+TasksProcessedTotal = promauto.NewCounterVec(
 prometheus.CounterOpts{
 Name: "taskforge_tasks_processed_total",
-Help: "The total number of processed tasks",
+Help: "Total number of tasks processed, partitioned by status.",
 },
 []string{"status"},
 )
 
-TaskDuration = promauto.NewHistogramVec(
+TaskExecutionDuration = promauto.NewHistogramVec(
 prometheus.HistogramOpts{
-Name:    "taskforge_task_duration_seconds",
-Help:    "Task execution duration in seconds",
+Name:    "taskforge_task_execution_duration_seconds",
+Help:    "Histogram of task execution duration in seconds.",
 Buckets: prometheus.DefBuckets,
 },
 []string{"task_name"},
 )
 
-ActiveWorkers = promauto.NewGauge(
+QueueDepth = promauto.NewGauge(
 prometheus.GaugeOpts{
-Name: "taskforge_active_workers",
-Help: "Current number of active worker goroutines",
+Name: "taskforge_queue_depth",
+Help: "Current number of tasks waiting in the scheduler priority queue.",
+},
+)
+
+DLQCount = promauto.NewGauge(
+prometheus.GaugeOpts{
+Name: "taskforge_dlq_count",
+Help: "Current number of failed tasks residing in the Dead Letter Queue.",
 },
 )
 )
 
-type Metrics struct {
-TasksProcessed *prometheus.CounterVec
-TaskDuration   *prometheus.HistogramVec
-ActiveWorkers  prometheus.Gauge
-}
-
-func (m *Metrics) IncFailed() {
-m.TasksProcessed.WithLabelValues("failed").Inc()
-}
-
-func (m *Metrics) IncCompleted() {
-m.TasksProcessed.WithLabelValues("completed").Inc()
-}
-
-func (m *Metrics) IncSubmitted() {
-m.TasksProcessed.WithLabelValues("submitted").Inc()
-}
-
-var Global = &Metrics{
-TasksProcessed: TasksProcessed,
-TaskDuration:   TaskDuration,
-ActiveWorkers:  ActiveWorkers,
-}

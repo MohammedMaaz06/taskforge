@@ -6,6 +6,8 @@ import (
 "net/http"
 "os"
 
+"github.com/prometheus/client_golang/prometheus/promhttp"
+
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
 "taskforge/internal/websocket"
@@ -52,6 +54,7 @@ pool:      pool,
 http.HandleFunc("/tasks", server.handleTasks)
 http.HandleFunc("/dlq", server.handleDLQ)
 http.HandleFunc("/ws", wsHub.ServeHTTP)
+http.Handle("/metrics", promhttp.Handler())
 http.Handle("/", http.FileServer(http.Dir("./static")))
 
 port := os.Getenv("PORT")
