@@ -2,100 +2,65 @@ package main
 
 import (
 "encoding/json"
-"log"
+"fmt"
 "net/http"
-"os"
 
 "github.com/prometheus/client_golang/prometheus/promhttp"
 
+"taskforge/internal/metrics"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
-"taskforge/internal/websocket"
 "taskforge/internal/worker"
 "taskforge/pkg/task"
 )
 
-type Server struct {
-scheduler *scheduler.TaskScheduler
-store     store.Store
-dlq       *scheduler.DeadLetterQueue
-wsHub     *websocket.Hub
-pool      *worker.Pool
-}
-
 func main() {
 st, err := store.NewSQLiteStore("taskforge.db")
 if err != nil {
-log.Fatalf("Failed to initialize database: %v", err)
+fmt.Printf("Failed to initialize database: %v\n", err)
+return
 }
 defer st.Close()
 
 sched := scheduler.NewTaskScheduler()
 dlq := scheduler.NewDeadLetterQueue()
-wsHub := websocket.NewHub()
-go wsHub.Run()
 
-listener := func(t *task.Task, status task.Status) {
-wsHub.BroadcastTaskUpdate(t, string(status))
-}
+wp := worker.NewPool(3, sched, st, dlq, nil)
+wp.Start()
+defer wp.Stop()
 
-pool := worker.NewPool(3, sched, st, dlq, listener)
-pool.Start()
-defer pool.Stop()
-
-server := &Server{
-scheduler: sched,
-store:     st,
-dlq:       dlq,
-wsHub:     wsHub,
-pool:      pool,
-}
-
-http.HandleFunc("/tasks", server.handleTasks)
-http.HandleFunc("/dlq", server.handleDLQ)
-http.HandleFunc("/ws", wsHub.ServeHTTP)
-http.Handle("/metrics", promhttp.Handler())
-http.Handle("/", http.FileServer(http.Dir("./static")))
-
-port := os.Getenv("PORT")
-if port == "" {
-port = "8080"
-}
-
-log.Printf("TaskForge server running on port %s...", port)
-if err := http.ListenAndServe(":"+port, nil); err != nil {
-log.Fatalf("Server error: %v", err)
-}
-}
-
-func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
+// Task Creation & List Endpoint
+http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
-
 switch r.Method {
 case http.MethodPost:
-var t task.Task
-if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+var req struct {
+Name       string `json:"name"`
+Priority   int    `json:"priority"`
+MaxRetries int    `json:"max_retries"`
+}
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 http.Error(w, err.Error(), http.StatusBadRequest)
 return
 }
-if t.ID == "" {
-t.ID = task.GenerateID()
-}
-t.Status = task.StatusPending
 
-if err := s.store.Save(&t); err != nil {
+if req.MaxRetries == 0 {
+req.MaxRetries = 3
+}
+
+t := task.NewTask(req.Name, req.Priority, req.MaxRetries)
+if err := st.Save(t); err != nil {
 http.Error(w, err.Error(), http.StatusInternalServerError)
 return
 }
-
-s.scheduler.Push(&t)
-s.wsHub.BroadcastTaskUpdate(&t, string(task.StatusPending))
+sched.Push(t)
+metrics.QueueDepth.Set(float64(sched.Size()))
 
 w.WriteHeader(http.StatusCreated)
 json.NewEncoder(w).Encode(t)
 
 case http.MethodGet:
-tasks, err := s.store.List()
+tasks, err := st.List()
 if err != nil {
 http.Error(w, err.Error(), http.StatusInternalServerError)
 return
@@ -105,14 +70,64 @@ json.NewEncoder(w).Encode(tasks)
 default:
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
-}
+})
 
-func (s *Server) handleDLQ(w http.ResponseWriter, r *http.Request) {
-w.Header().Set("Content-Type", "application/json")
-if r.Method != http.MethodGet {
+// Task Cancellation Endpoint: POST /tasks/cancel?id=xxx
+http.HandleFunc("/tasks/cancel", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
-json.NewEncoder(w).Encode(s.dlq.GetAll())
+
+taskID := r.URL.Query().Get("id")
+if taskID == "" {
+http.Error(w, "Missing task id query parameter", http.StatusBadRequest)
+return
+}
+
+success := wp.CancelTask(taskID)
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"task_id":   taskID,
+"cancelled": success,
+})
+})
+
+// Dynamic Worker Scaling Endpoint: POST/GET /workers/scale
+http.HandleFunc("/workers/scale", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+switch r.Method {
+case http.MethodGet:
+json.NewEncoder(w).Encode(map[string]int{"workers": wp.GetWorkerCount()})
+
+case http.MethodPost:
+var req struct {
+Workers int `json:"workers"`
+}
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+http.Error(w, err.Error(), http.StatusBadRequest)
+return
+}
+
+if req.Workers <= 0 {
+http.Error(w, "Invalid worker count", http.StatusBadRequest)
+return
+}
+
+newCount := wp.Scale(req.Workers)
+json.NewEncoder(w).Encode(map[string]int{"workers": newCount})
+
+default:
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+})
+
+http.Handle("/metrics", promhttp.Handler())
+http.Handle("/", http.FileServer(http.Dir("./static")))
+
+fmt.Println("TaskForge server running on port 8080...")
+if err := http.ListenAndServe(":8080", nil); err != nil {
+fmt.Printf("Server error: %v\n", err)
+}
 }
 
