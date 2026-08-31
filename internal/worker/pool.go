@@ -24,8 +24,9 @@ store        store.Store
 dlq          *scheduler.DeadLetterQueue
 listener     TaskListener
 stopChan     chan struct{}
-cancelMap    sync.Map // taskId -> context.CancelFunc
+cancelMap    sync.Map
 workerCancel []chan struct{}
+baseBackoff  time.Duration
 }
 
 func NewPool(numWorkers int, sched *scheduler.TaskScheduler, st store.Store, dlq *scheduler.DeadLetterQueue, listener TaskListener) *Pool {
@@ -37,6 +38,7 @@ dlq:          dlq,
 listener:     listener,
 stopChan:     make(chan struct{}),
 workerCancel: make([]chan struct{}, 0),
+baseBackoff:  1 * time.Second,
 }
 }
 
@@ -90,7 +92,6 @@ p.cancelMap.Delete(taskID)
 return true
 }
 
-// If task is still pending in store, set to cancelled directly
 t, err := p.store.Get(taskID)
 if err == nil && t != nil && t.Status == task.StatusPending {
 t.Status = task.StatusCancelled
@@ -143,10 +144,9 @@ if p.listener != nil {
 p.listener(t, task.StatusRunning)
 }
 
-// Simulate work with context cancellation check
 workDone := make(chan struct{})
 go func() {
-time.Sleep(1000 * time.Millisecond)
+time.Sleep(500 * time.Millisecond)
 close(workDone)
 }()
 
@@ -183,15 +183,20 @@ p.dlq.Add(t)
 metrics.TasksProcessedTotal.WithLabelValues("failed").Inc()
 metrics.DLQCount.Set(float64(p.dlq.Size()))
 
-log.Printf("ERROR task failed permanently id=%s name=%s retries=%d", t.ID, t.Name, t.CurrentRetry)
+log.Printf("ERROR task failed permanently id=%s name=%s retries=%d/%d", t.ID, t.Name, t.CurrentRetry, t.MaxRetries)
 } else {
+backoffDelay := t.CalculateBackoff(p.baseBackoff)
 t.Status = task.StatusPending
-p.scheduler.Push(t)
+t.ScheduledAt = time.Now().Add(backoffDelay)
 
+log.Printf("WARN task scheduled for retry id=%s name=%s retry=%d/%d backoff=%v", t.ID, t.Name, t.CurrentRetry, t.MaxRetries, backoffDelay)
+
+go func(retryTask *task.Task, delay time.Duration) {
+time.Sleep(delay)
+p.scheduler.Push(retryTask)
 metrics.TasksProcessedTotal.WithLabelValues("retry").Inc()
 metrics.QueueDepth.Set(float64(p.scheduler.Size()))
-
-log.Printf("WARN task retrying id=%s name=%s retry=%d/%d", t.ID, t.Name, t.CurrentRetry, t.MaxRetries)
+}(t, backoffDelay)
 }
 } else {
 t.Status = task.StatusCompleted

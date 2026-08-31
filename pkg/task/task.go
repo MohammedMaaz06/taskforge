@@ -3,6 +3,7 @@ package task
 import (
 "crypto/rand"
 "fmt"
+"math"
 "time"
 )
 
@@ -44,6 +45,15 @@ ScheduledAt:  now,
 CreatedAt:    now,
 UpdatedAt:    now,
 }
+}
+
+// CalculateBackoff returns delay = baseDelay * 2^(currentRetry-1)
+func (t *Task) CalculateBackoff(baseDelay time.Duration) time.Duration {
+if t.CurrentRetry <= 0 {
+return 0
+}
+multiplier := math.Pow(2, float64(t.CurrentRetry-1))
+return time.Duration(multiplier) * baseDelay
 }
 
 func GenerateID() string {
