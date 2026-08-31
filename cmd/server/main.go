@@ -72,7 +72,7 @@ http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 })
 
-// Task Cancellation Endpoint: POST /tasks/cancel?id=xxx
+// Task Cancellation Endpoint
 http.HandleFunc("/tasks/cancel", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -93,7 +93,60 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// Dynamic Worker Scaling Endpoint: POST/GET /workers/scale
+// DLQ Endpoints: Get DLQ tasks
+http.HandleFunc("/dlq", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+if r.Method == http.MethodGet {
+json.NewEncoder(w).Encode(dlq.List())
+return
+}
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+})
+
+// DLQ Retry: POST /dlq/retry?id=xxx
+http.HandleFunc("/dlq/retry", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+taskID := r.URL.Query().Get("id")
+t := dlq.Remove(taskID)
+if t == nil {
+http.Error(w, "Task not found in DLQ", http.StatusNotFound)
+return
+}
+
+t.CurrentRetry = 0
+t.Status = task.StatusPending
+st.Save(t)
+sched.Push(t)
+
+metrics.DLQCount.Set(float64(dlq.Size()))
+metrics.QueueDepth.Set(float64(sched.Size()))
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"task_id":  taskID,
+"retried":  true,
+})
+})
+
+// DLQ Purge: POST /dlq/purge
+http.HandleFunc("/dlq/purge", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+dlq.Clear()
+metrics.DLQCount.Set(0)
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{"purged": true})
+})
+
+// Dynamic Worker Scaling
 http.HandleFunc("/workers/scale", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 switch r.Method {

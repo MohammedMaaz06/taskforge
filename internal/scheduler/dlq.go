@@ -17,53 +17,42 @@ tasks: make([]*task.Task, 0),
 }
 }
 
-func NewDLQ() *DeadLetterQueue {
-return NewDeadLetterQueue()
-}
-
-func (dlq *DeadLetterQueue) Store(t *task.Task, reason string) {
+func (dlq *DeadLetterQueue) Add(t *task.Task) {
 dlq.mu.Lock()
 defer dlq.mu.Unlock()
-if t != nil {
-t.LastError = reason
 t.Status = task.StatusDLQ
-}
 dlq.tasks = append(dlq.tasks, t)
 }
 
-func (dlq *DeadLetterQueue) Add(t *task.Task) {
-dlq.Store(t, "")
-}
-
-func (dlq *DeadLetterQueue) GetTasks() []*task.Task {
+func (dlq *DeadLetterQueue) List() []*task.Task {
 dlq.mu.Lock()
 defer dlq.mu.Unlock()
-result := make([]*task.Task, len(dlq.tasks))
-copy(result, dlq.tasks)
-return result
+copied := make([]*task.Task, len(dlq.tasks))
+copy(copied, dlq.tasks)
+return copied
 }
 
-func (dlq *DeadLetterQueue) GetAll() []*task.Task {
-return dlq.GetTasks()
+func (dlq *DeadLetterQueue) Remove(taskID string) *task.Task {
+dlq.mu.Lock()
+defer dlq.mu.Unlock()
+for i, t := range dlq.tasks {
+if t.ID == taskID {
+dlq.tasks = append(dlq.tasks[:i], dlq.tasks[i+1:]...)
+return t
+}
+}
+return nil
+}
+
+func (dlq *DeadLetterQueue) Clear() {
+dlq.mu.Lock()
+defer dlq.mu.Unlock()
+dlq.tasks = make([]*task.Task, 0)
 }
 
 func (dlq *DeadLetterQueue) Size() int {
 dlq.mu.Lock()
 defer dlq.mu.Unlock()
 return len(dlq.tasks)
-}
-
-func (dlq *DeadLetterQueue) Remove(id string) (*task.Task, bool) {
-dlq.mu.Lock()
-defer dlq.mu.Unlock()
-
-for i, t := range dlq.tasks {
-if t != nil && t.ID == id {
-removedTask := dlq.tasks[i]
-dlq.tasks = append(dlq.tasks[:i], dlq.tasks[i+1:]...)
-return removedTask, true
-}
-}
-return nil, false
 }
 
