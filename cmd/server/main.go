@@ -8,6 +8,7 @@ import (
 "github.com/prometheus/client_golang/prometheus/promhttp"
 
 "taskforge/internal/metrics"
+"taskforge/internal/notifier"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
 "taskforge/internal/worker"
@@ -24,12 +25,24 @@ defer st.Close()
 
 sched := scheduler.NewTaskScheduler()
 dlq := scheduler.NewDeadLetterQueue()
+notif := notifier.NewNotifier()
 
-wp := worker.NewPool(3, sched, st, dlq, nil)
+listener := func(t *task.Task, status task.Status) {
+switch status {
+case task.StatusCompleted:
+notif.Notify(notifier.EventTaskCompleted, t)
+case task.StatusFailed:
+notif.Notify(notifier.EventTaskFailed, t)
+case task.StatusDLQ:
+notif.Notify(notifier.EventTaskDLQ, t)
+}
+}
+
+wp := worker.NewPool(3, sched, st, dlq, listener)
 wp.Start()
 defer wp.Stop()
 
-// Task Creation & List Endpoint
+// Task Endpoint
 http.HandleFunc("/tasks", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 switch r.Method {
@@ -72,6 +85,30 @@ http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 }
 })
 
+// Webhook Endpoints
+http.HandleFunc("/webhooks", func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+switch r.Method {
+case http.MethodPost:
+var req struct {
+URL string `json:"url"`
+}
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URL == "" {
+http.Error(w, "Invalid webhook URL", http.StatusBadRequest)
+return
+}
+
+notif.Register(req.URL)
+json.NewEncoder(w).Encode(map[string]interface{}{"status": "registered", "url": req.URL})
+
+case http.MethodGet:
+json.NewEncoder(w).Encode(map[string]interface{}{"webhooks": notif.List()})
+
+default:
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+})
+
 // Task Cancellation Endpoint
 http.HandleFunc("/tasks/cancel", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
@@ -87,13 +124,10 @@ return
 
 success := wp.CancelTask(taskID)
 w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]interface{}{
-"task_id":   taskID,
-"cancelled": success,
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"task_id": taskID, "cancelled": success})
 })
 
-// DLQ Endpoints: Get DLQ tasks
+// DLQ Endpoints
 http.HandleFunc("/dlq", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 if r.Method == http.MethodGet {
@@ -103,7 +137,6 @@ return
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 })
 
-// DLQ Retry: POST /dlq/retry?id=xxx
 http.HandleFunc("/dlq/retry", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -126,13 +159,9 @@ metrics.DLQCount.Set(float64(dlq.Size()))
 metrics.QueueDepth.Set(float64(sched.Size()))
 
 w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]interface{}{
-"task_id":  taskID,
-"retried":  true,
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"task_id": taskID, "retried": true})
 })
 
-// DLQ Purge: POST /dlq/purge
 http.HandleFunc("/dlq/purge", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -146,7 +175,7 @@ w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(map[string]interface{}{"purged": true})
 })
 
-// Dynamic Worker Scaling
+// Dynamic Worker Scaling Endpoint
 http.HandleFunc("/workers/scale", func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 switch r.Method {
