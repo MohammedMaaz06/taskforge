@@ -6,35 +6,30 @@ import (
 )
 
 var (
-TasksProcessedTotal = promauto.NewCounterVec(
-prometheus.CounterOpts{
-Name: "taskforge_tasks_processed_total",
-Help: "Total number of tasks processed, partitioned by status.",
-},
-[]string{"status"},
-)
+TasksCompleted = promauto.NewCounter(prometheus.CounterOpts{
+Name: "taskforge_tasks_completed_total",
+Help: "The total number of successfully completed tasks",
+})
 
-TaskExecutionDuration = promauto.NewHistogramVec(
-prometheus.HistogramOpts{
-Name:    "taskforge_task_execution_duration_seconds",
-Help:    "Histogram of task execution duration in seconds.",
-Buckets: prometheus.DefBuckets,
-},
-[]string{"task_name"},
-)
+TaskFailures = promauto.NewCounter(prometheus.CounterOpts{
+Name: "taskforge_tasks_failed_total",
+Help: "The total number of failed tasks",
+})
 
-QueueDepth = promauto.NewGauge(
-prometheus.GaugeOpts{
+DLQCount = promauto.NewGauge(prometheus.GaugeOpts{
+Name: "taskforge_dlq_tasks_total",
+Help: "Current number of tasks in Dead Letter Queue",
+})
+
+QueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
 Name: "taskforge_queue_depth",
-Help: "Current number of tasks waiting in the scheduler priority queue.",
-},
-)
+Help: "Current depth of pending task scheduler queue",
+})
 
-DLQCount = promauto.NewGauge(
-prometheus.GaugeOpts{
-Name: "taskforge_dlq_count",
-Help: "Current number of failed tasks residing in the Dead Letter Queue.",
-},
-)
+TaskDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+Name:    "taskforge_task_duration_seconds",
+Help:    "Execution time for tasks in seconds",
+Buckets: prometheus.DefBuckets,
+})
 )
 

@@ -4,6 +4,7 @@ import (
 "encoding/json"
 "fmt"
 "net/http"
+"time"
 
 "github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -48,9 +49,11 @@ w.Header().Set("Content-Type", "application/json")
 switch r.Method {
 case http.MethodPost:
 var req struct {
-Name       string `json:"name"`
-Priority   int    `json:"priority"`
-MaxRetries int    `json:"max_retries"`
+Name            string `json:"name"`
+Priority        int    `json:"priority"`
+MaxRetries      int    `json:"max_retries"`
+DelaySeconds    int    `json:"delay_seconds"`
+IntervalSeconds int    `json:"interval_seconds"`
 }
 if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 http.Error(w, err.Error(), http.StatusBadRequest)
@@ -62,6 +65,13 @@ req.MaxRetries = 3
 }
 
 t := task.NewTask(req.Name, req.Priority, req.MaxRetries)
+if req.DelaySeconds > 0 {
+t.ScheduledAt = time.Now().Add(time.Duration(req.DelaySeconds) * time.Second)
+}
+if req.IntervalSeconds > 0 {
+t.IntervalSeconds = req.IntervalSeconds
+}
+
 if err := st.Save(t); err != nil {
 http.Error(w, err.Error(), http.StatusInternalServerError)
 return

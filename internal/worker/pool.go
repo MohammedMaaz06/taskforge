@@ -5,7 +5,6 @@ import (
 "fmt"
 "log"
 "sync"
-"sync/atomic"
 "time"
 
 "taskforge/internal/metrics"
@@ -17,197 +16,193 @@ import (
 type TaskListener func(t *task.Task, status task.Status)
 
 type Pool struct {
-mu           sync.Mutex
-numWorkers   int32
-scheduler    *scheduler.TaskScheduler
-store        store.Store
-dlq          *scheduler.DeadLetterQueue
-listener     TaskListener
-stopChan     chan struct{}
-cancelMap    sync.Map
-workerCancel []chan struct{}
-baseBackoff  time.Duration
+numWorkers int
+sched      *scheduler.TaskScheduler
+store      store.Store
+dlq        *scheduler.DeadLetterQueue
+listener   TaskListener
+cancelMap  map[string]context.CancelFunc
+mu         sync.Mutex
+wg         sync.WaitGroup
+quit       chan struct{}
 }
 
-func NewPool(numWorkers int, sched *scheduler.TaskScheduler, st store.Store, dlq *scheduler.DeadLetterQueue, listener TaskListener) *Pool {
+func NewPool(numWorkers int, sched *scheduler.TaskScheduler, store store.Store, dlq *scheduler.DeadLetterQueue, listener TaskListener) *Pool {
 return &Pool{
-numWorkers:   int32(numWorkers),
-scheduler:    sched,
-store:        st,
-dlq:          dlq,
-listener:     listener,
-stopChan:     make(chan struct{}),
-workerCancel: make([]chan struct{}, 0),
-baseBackoff:  1 * time.Second,
+numWorkers: numWorkers,
+sched:      sched,
+store:      store,
+dlq:        dlq,
+listener:   listener,
+cancelMap:  make(map[string]context.CancelFunc),
+quit:       make(chan struct{}),
 }
 }
 
 func (p *Pool) Start() {
 p.mu.Lock()
 defer p.mu.Unlock()
+
+for i := 0; i < p.numWorkers; i++ {
+p.wg.Add(1)
+go p.workerLoop(i)
+}
 log.Printf("INFO worker pool started num_workers=%d", p.numWorkers)
-for i := 0; i < int(p.numWorkers); i++ {
-p.startWorker()
-}
 }
 
-func (p *Pool) startWorker() {
-stop := make(chan struct{})
-p.workerCancel = append(p.workerCancel, stop)
-go p.worker(stop)
-}
-
-func (p *Pool) Scale(targetWorkers int) int {
+func (p *Pool) Scale(newSize int) int {
 p.mu.Lock()
 defer p.mu.Unlock()
 
-current := int(atomic.LoadInt32(&p.numWorkers))
-if targetWorkers <= 0 || targetWorkers == current {
-return current
-}
-
-if targetWorkers > current {
-diff := targetWorkers - current
+if newSize > p.numWorkers {
+diff := newSize - p.numWorkers
 for i := 0; i < diff; i++ {
-p.startWorker()
+p.wg.Add(1)
+go p.workerLoop(p.numWorkers + i)
 }
-} else {
-diff := current - targetWorkers
+} else if newSize < p.numWorkers {
+diff := p.numWorkers - newSize
 for i := 0; i < diff; i++ {
-idx := len(p.workerCancel) - 1
-close(p.workerCancel[idx])
-p.workerCancel = p.workerCancel[:idx]
+p.quit <- struct{}{}
 }
 }
 
-atomic.StoreInt32(&p.numWorkers, int32(targetWorkers))
-log.Printf("INFO worker pool scaled from %d to %d", current, targetWorkers)
-return targetWorkers
-}
-
-func (p *Pool) CancelTask(taskID string) bool {
-if cancel, ok := p.cancelMap.Load(taskID); ok {
-cancel.(context.CancelFunc)()
-p.cancelMap.Delete(taskID)
-return true
-}
-
-t, err := p.store.Get(taskID)
-if err == nil && t != nil && t.Status == task.StatusPending {
-t.Status = task.StatusCancelled
-p.store.Save(t)
-metrics.TasksProcessedTotal.WithLabelValues("cancelled").Inc()
-return true
-}
-
-return false
+p.numWorkers = newSize
+log.Printf("INFO worker pool scaled to num_workers=%d", p.numWorkers)
+return p.numWorkers
 }
 
 func (p *Pool) GetWorkerCount() int {
-return int(atomic.LoadInt32(&p.numWorkers))
+p.mu.Lock()
+defer p.mu.Unlock()
+return p.numWorkers
 }
 
-func (p *Pool) Stop() {
-close(p.stopChan)
+func (p *Pool) CancelTask(id string) bool {
+p.mu.Lock()
+defer p.mu.Unlock()
+
+if cancel, exists := p.cancelMap[id]; exists {
+cancel()
+delete(p.cancelMap, id)
+log.Printf("INFO task cancellation signal sent id=%s", id)
+return true
+}
+return false
 }
 
-func (p *Pool) worker(stopChan chan struct{}) {
+func (p *Pool) workerLoop(id int) {
+defer p.wg.Done()
+
 for {
 select {
-case <-p.stopChan:
-return
-case <-stopChan:
+case <-p.quit:
 return
 default:
-t, err := p.scheduler.Pop()
+t, err := p.sched.Pop()
 if err != nil || t == nil {
 time.Sleep(100 * time.Millisecond)
 continue
 }
 
-metrics.QueueDepth.Set(float64(p.scheduler.Size()))
-p.processTask(t)
+// Delay execution if scheduled in the future
+if time.Now().Before(t.ScheduledAt) {
+time.Sleep(time.Until(t.ScheduledAt))
+}
+
+p.executeTask(id, t)
 }
 }
 }
 
-func (p *Pool) processTask(t *task.Task) {
-ctx, cancel := context.WithCancel(context.Background())
-p.cancelMap.Store(t.ID, cancel)
-defer p.cancelMap.Delete(t.ID)
+func (p *Pool) executeTask(workerID int, t *task.Task) {
+ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+p.mu.Lock()
+p.cancelMap[t.ID] = cancel
+p.mu.Unlock()
+
+defer func() {
+p.mu.Lock()
+delete(p.cancelMap, t.ID)
+p.mu.Unlock()
+}()
+
+t.Status = task.StatusRunning
+t.UpdatedAt = time.Now()
+p.store.Save(t)
 
 startTime := time.Now()
 
-t.Status = task.StatusRunning
-p.store.Save(t)
-if p.listener != nil {
-p.listener(t, task.StatusRunning)
-}
-
-workDone := make(chan struct{})
-go func() {
-time.Sleep(500 * time.Millisecond)
-close(workDone)
-}()
-
 select {
 case <-ctx.Done():
-t.Status = task.StatusCancelled
-t.LastError = "task cancelled by user"
+if ctx.Err() == context.Canceled {
+t.Status = task.StatusFailed
+t.LastError = "cancelled by user request"
 p.store.Save(t)
-metrics.TasksProcessedTotal.WithLabelValues("cancelled").Inc()
-log.Printf("WARN task cancelled id=%s name=%s", t.ID, t.Name)
+metrics.TaskFailures.Inc()
 if p.listener != nil {
-p.listener(t, task.StatusCancelled)
+p.listener(t, task.StatusFailed)
 }
 return
-case <-workDone:
+}
+default:
 }
 
-var err error
+// Simulate work / failure test
 if t.Name == "fail-task" {
-err = fmt.Errorf("simulated failure for task %s", t.ID)
-}
-
-duration := time.Since(startTime).Seconds()
-metrics.TaskExecutionDuration.WithLabelValues(t.Name).Observe(duration)
-
-if err != nil {
+t.LastError = fmt.Sprintf("simulated failure for task %s", t.ID)
 t.CurrentRetry++
-t.LastError = err.Error()
+t.UpdatedAt = time.Now()
 
 if t.CurrentRetry >= t.MaxRetries {
-t.Status = task.StatusFailed
-p.dlq.Add(t)
-
-metrics.TasksProcessedTotal.WithLabelValues("failed").Inc()
-metrics.DLQCount.Set(float64(p.dlq.Size()))
-
-log.Printf("ERROR task failed permanently id=%s name=%s retries=%d/%d", t.ID, t.Name, t.CurrentRetry, t.MaxRetries)
-} else {
-backoffDelay := t.CalculateBackoff(p.baseBackoff)
-t.Status = task.StatusPending
-t.ScheduledAt = time.Now().Add(backoffDelay)
-
-log.Printf("WARN task scheduled for retry id=%s name=%s retry=%d/%d backoff=%v", t.ID, t.Name, t.CurrentRetry, t.MaxRetries, backoffDelay)
-
-go func(retryTask *task.Task, delay time.Duration) {
-time.Sleep(delay)
-p.scheduler.Push(retryTask)
-metrics.TasksProcessedTotal.WithLabelValues("retry").Inc()
-metrics.QueueDepth.Set(float64(p.scheduler.Size()))
-}(t, backoffDelay)
-}
-} else {
-t.Status = task.StatusCompleted
-metrics.TasksProcessedTotal.WithLabelValues("completed").Inc()
-
-log.Printf("INFO task completed successfully id=%s name=%s duration=%.2fs", t.ID, t.Name, duration)
-}
-
+t.Status = task.StatusDLQ
 p.store.Save(t)
+p.dlq.Add(t)
+metrics.DLQCount.Inc()
+metrics.TaskFailures.Inc()
 if p.listener != nil {
-p.listener(t, t.Status)
+p.listener(t, task.StatusDLQ)
 }
+} else {
+t.Status = task.StatusPending
+p.store.Save(t)
+p.sched.Push(t)
+metrics.TaskFailures.Inc()
+if p.listener != nil {
+p.listener(t, task.StatusFailed)
+}
+}
+return
+}
+
+time.Sleep(500 * time.Millisecond)
+
+t.Status = task.StatusCompleted
+t.UpdatedAt = time.Now()
+p.store.Save(t)
+
+duration := time.Since(startTime).Seconds()
+metrics.TaskDuration.Observe(duration)
+metrics.TasksCompleted.Inc()
+
+if p.listener != nil {
+p.listener(t, task.StatusCompleted)
+}
+
+// Re-enqueue if configured as a recurring task
+if t.IntervalSeconds > 0 {
+nextTask := task.NewTask(t.Name, t.Priority, t.MaxRetries)
+nextTask.IntervalSeconds = t.IntervalSeconds
+nextTask.ScheduledAt = time.Now().Add(time.Duration(t.IntervalSeconds) * time.Second)
+p.store.Save(nextTask)
+p.sched.Push(nextTask)
+log.Printf("INFO recurring task scheduled name=%s next_id=%s interval=%ds", t.Name, nextTask.ID, t.IntervalSeconds)
+}
+}
+
+func (p *Pool) Stop() {
+close(p.quit)
+p.wg.Wait()
 }
 

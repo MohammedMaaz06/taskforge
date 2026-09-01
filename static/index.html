@@ -3,169 +3,285 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TaskForge - Live Task Monitor</title>
+    <title>TaskForge - Live Control Center</title>
     <style>
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background: #f5f2eb; color: #1c1917; margin: 0; padding: 20px; min-height: 100vh; }
-        
-        .container { max-width: 900px; margin: 0 auto; }
-        
-        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #e7e5e4; padding-bottom: 15px; margin-bottom: 25px; }
-        .logo-container { display: flex; align-items: center; gap: 12px; }
-        .logo-svg { width: 36px; height: 36px; fill: #2563eb; }
-        h1 { margin: 0; font-size: 1.75rem; font-weight: 700; color: #1c1917; letter-spacing: -0.5px; }
-        
-        .status-badge { padding: 6px 14px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; letter-spacing: 0.5px; }
-        .connected { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
-        .disconnected { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
-        
-        .card { background: #ffffff; border-radius: 12px; padding: 24px; margin-bottom: 25px; border: 1px solid #e7e5e4; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
-        .card h3 { margin-top: 0; font-size: 1.1rem; color: #44403c; margin-bottom: 16px; }
-        
-        form { display: grid; grid-template-columns: 2fr 1fr 1fr auto; gap: 12px; }
-        input, button { background: #fafaf9; border: 1px solid #d6d3d1; color: #1c1917; padding: 12px; border-radius: 8px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; }
-        input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
-        
-        button { background: #2563eb; color: white; border: none; font-weight: 600; cursor: pointer; transition: background-color 0.2s, transform 0.1s; }
-        button:hover { background: #1d4ed8; }
-        button:active { transform: translateY(1px); }
-        
-        table { width: 100%; border-collapse: collapse; text-align: left; }
-        th, td { padding: 14px 12px; border-bottom: 1px solid #e7e5e4; }
-        th { color: #78716c; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
-        
-        .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.5px; }
-        .badge-PENDING { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
-        .badge-RUNNING { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
-        .badge-COMPLETED { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
-        .badge-FAILED, .badge-DLQ { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
-        code { background: #f5f5f4; padding: 4px 8px; border-radius: 4px; font-family: monospace; color: #2563eb; border: 1px solid #e7e5e4; }
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --accent: #38bdf8;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --danger: #ef4444;
+            --success: #22c55e;
+            --warning: #f59e0b;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            border-bottom: 1px solid #334155;
+            padding-bottom: 1rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: 8px;
+            padding: 1.25rem;
+            border: 1px solid #334155;
+        }
+
+        .card-title {
+            color: var(--muted);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .card-value {
+            font-size: 2.25rem;
+            font-weight: 700;
+            margin-top: 0.5rem;
+            color: var(--accent);
+        }
+
+        .card-value.danger { color: var(--danger); }
+        .card-value.success { color: var(--success); }
+
+        .control-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .form-group {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 1rem;
+        }
+
+        input, select, button {
+            padding: 0.6rem 1rem;
+            border-radius: 6px;
+            border: 1px solid #334155;
+            background: #0f172a;
+            color: var(--text);
+        }
+
+        button {
+            background: var(--accent);
+            color: #0f172a;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+        }
+
+        button:hover { opacity: 0.9; }
+        button.danger-btn { background: var(--danger); color: var(--text); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--card);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid #334155;
+        }
+
+        th { background: #0f172a; color: var(--muted); }
+
+        .badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-COMPLETED { background: #166534; color: #4ade80; }
+        .badge-RUNNING { background: #1e40af; color: #60a5fa; }
+        .badge-PENDING { background: #854d0e; color: #fde047; }
+        .badge-FAILED, .badge-DLQ { background: #991b1b; color: #f87171; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo-container">
-                <svg class="logo-svg" viewBox="0 0 24 24">
-                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                </svg>
-                <h1>TaskForge Live Monitor</h1>
-            </div>
-            <span id="connection-status" class="status-badge disconnected">Disconnected</span>
-        </header>
+    <div class="header">
+        <h1>TaskForge Dashboard</h1>
+        <span id="live-indicator" style="color: var(--success);">Live Monitoring Active</span>
+    </div>
 
+    <!-- Metric Cards -->
+    <div class="grid">
         <div class="card">
-            <h3>Submit New Task</h3>
-            <form id="task-form">
-                <input type="text" id="task-name" placeholder="Task Name (e.g., process-image)" required>
-                <input type="number" id="task-priority" placeholder="Priority (1-10)" value="5" min="1" max="10" required>
-                <input type="number" id="task-retries" placeholder="Max Retries" value="3" min="0" max="10" required>
-                <button type="submit">Submit Task</button>
-            </form>
+            <div class="card-title">Active Workers</div>
+            <div class="card-value" id="val-workers">0</div>
         </div>
-
         <div class="card">
-            <h3>Real-Time Task Stream</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Task ID</th>
-                        <th>Name</th>
-                        <th>Status</th>
-                        <th>Error Details</th>
-                    </tr>
-                </thead>
-                <tbody id="task-table-body">
-                    <tr><td colspan="4" style="text-align:center; color:#78716c;">No live events received yet. Submit a task above!</td></tr>
-                </tbody>
-            </table>
+            <div class="card-title">Pending Queue</div>
+            <div class="card-value" id="val-queue">0</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Dead Letter Queue</div>
+            <div class="card-value danger" id="val-dlq">0</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Active Webhooks</div>
+            <div class="card-value success" id="val-webhooks">0</div>
         </div>
     </div>
 
+    <!-- Quick Actions Panel -->
+    <div class="control-panel">
+        <div class="card">
+            <div class="card-title">Scale Worker Pool</div>
+            <div class="form-group">
+                <input type="number" id="worker-count" min="1" max="20" placeholder="Count (e.g. 5)">
+                <button onclick="scaleWorkers()">Set Workers</button>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">DLQ Quick Controls</div>
+            <div class="form-group">
+                <button class="danger-btn" onclick="purgeDLQ()">Purge DLQ</button>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-title">Register Webhook</div>
+            <div class="form-group">
+                <input type="text" id="webhook-url" placeholder="https://example.com/webhook">
+                <button onclick="registerWebhook()">Register</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Tasks Table -->
+    <h2>Task Execution Registry</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Task ID</th>
+                <th>Name</th>
+                <th>Status</th>
+                <th>Retries</th>
+                <th>Scheduled At</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="task-table-body">
+            <tr><td colspan="6">Loading active tasks...</td></tr>
+        </tbody>
+    </table>
+
     <script>
-        // WebSocket & API Integration
-        const wsUri = "ws://" + window.location.host + "/ws";
-        let ws;
-        const tasks = new Map();
+        async function updateDashboard() {
+            try {
+                // Fetch Workers Count
+                const workerRes = await fetch("/workers/scale");
+                const workerData = await workerRes.json();
+                document.getElementById("val-workers").innerText = workerData.workers || 0;
 
-        function connectWebSocket() {
-            ws = new WebSocket(wsUri);
+                // Fetch DLQ Status
+                const dlqRes = await fetch("/dlq");
+                const dlqTasks = await dlqRes.json();
+                document.getElementById("val-dlq").innerText = dlqTasks.length || 0;
 
-            ws.onopen = () => {
-                const status = document.getElementById("connection-status");
-                status.textContent = "Live Connected";
-                status.className = "status-badge connected";
-            };
+                // Fetch Registered Webhooks
+                const webhookRes = await fetch("/webhooks");
+                const webhookData = await webhookRes.json();
+                document.getElementById("val-webhooks").innerText = (webhookData.webhooks || []).length;
 
-            ws.onclose = () => {
-                const status = document.getElementById("connection-status");
-                status.textContent = "Disconnected (Retrying...)";
-                status.className = "status-badge disconnected";
-                setTimeout(connectWebSocket, 2000);
-            };
+                // Fetch Tasks
+                const tasksRes = await fetch("/tasks");
+                const tasks = await tasksRes.json();
 
-            ws.onmessage = (event) => {
-                const msg = JSON.parse(event.data);
-                if (msg.type === "TASK_STATUS_UPDATE") {
-                    updateTaskRow(msg.payload);
+                let pendingCount = 0;
+                const tbody = document.getElementById("task-table-body");
+                tbody.innerHTML = "";
+
+                if (tasks.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6">No tasks processed yet.</td></tr>';
+                } else {
+                    tasks.reverse().forEach(t => {
+                        if (t.status === "PENDING") pendingCount++;
+                        
+                        const row = document.createElement("tr");
+                        row.innerHTML = `
+                            <td><code>${t.id}</code></td>
+                            <td>${t.name}</td>
+                            <td><span class="badge badge-${t.status}">${t.status}</span></td>
+                            <td>${t.current_retry} / ${t.max_retries}</td>
+                            <td>${new Date(t.scheduled_at).toLocaleTimeString()}</td>
+                            <td>
+                                ${t.status === "PENDING" ? '<button class="danger-btn" onclick="cancelTask(\'' + t.id + '\')">Cancel</button>' : "-"}
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    });
                 }
-            };
+
+                document.getElementById("val-queue").innerText = pendingCount;
+            } catch (err) {
+                console.error("Error polling dashboard metrics:", err);
+            }
         }
 
-        function updateTaskRow(data) {
-            tasks.set(data.task_id, data);
-            renderTable();
-        }
-
-        function renderTable() {
-            const tbody = document.getElementById("task-table-body");
-            if (tasks.size === 0) return;
-
-            tbody.innerHTML = "";
-            Array.from(tasks.values()).reverse().forEach(task => {
-                const tr = document.createElement("tr");
-                tr.innerHTML = `
-                    <td><code>${task.task_id}</code></td>
-                    <td>${task.name}</td>
-                    <td><span class="badge badge-${task.status}">${task.status}</span></td>
-                    <td style="color: #b91c1c;">${task.error || "-"}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
-
-        document.getElementById("task-form").addEventListener("submit", async (e) => {
-            e.preventDefault();
-            const name = document.getElementById("task-name").value;
-            const priority = parseInt(document.getElementById("task-priority").value);
-            const retries = parseInt(document.getElementById("task-retries").value);
-
-            await fetch("/tasks", {
+        async function scaleWorkers() {
+            const count = parseInt(document.getElementById("worker-count").value);
+            if (!count) return;
+            await fetch("/workers/scale", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    name: name,
-                    payload: btoa("sample-payload"),
-                    priority: priority,
-                    max_retries: retries
-                })
+                body: JSON.stringify({ workers: count })
             });
+            updateDashboard();
+        }
 
-            document.getElementById("task-name").value = "";
-        });
+        async function cancelTask(id) {
+            await fetch('/tasks/cancel?id=' + id, { method: "POST" });
+            updateDashboard();
+        }
 
-        fetch("/tasks")
-            .then(res => res.json())
-            .then(data => {
-                if (Array.isArray(data)) {
-                    data.forEach(t => tasks.set(t.id, { task_id: t.id, name: t.name, status: t.status, error: t.last_error }));
-                    renderTable();
-                }
-            })
-            .catch(() => {});
+        async function purgeDLQ() {
+            await fetch("/dlq/purge", { method: "POST" });
+            updateDashboard();
+        }
 
-        connectWebSocket();
+        async function registerWebhook() {
+            const url = document.getElementById("webhook-url").value;
+            if (!url) return;
+            await fetch("/webhooks", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: url })
+            });
+            document.getElementById("webhook-url").value = "";
+            updateDashboard();
+        }
+
+        // Poll metrics every 2 seconds
+        setInterval(updateDashboard, 2000);
+        updateDashboard();
     </script>
 </body>
 </html>
-
