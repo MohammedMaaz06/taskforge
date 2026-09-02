@@ -4,32 +4,40 @@ import (
 "testing"
 "time"
 
+"taskforge/internal/dag"
 "taskforge/internal/scheduler"
+"taskforge/internal/store"
 "taskforge/pkg/task"
 )
 
-func TestWorkerPool(t *testing.T) {
+func TestWorkerPoolExecution(t *testing.T) {
+st, err := store.NewSQLiteStore("test_worker.db")
+if err != nil {
+t.Fatalf("Failed to init db: %v", err)
+}
+defer st.Close()
+
 sched := scheduler.NewTaskScheduler()
 dlq := scheduler.NewDeadLetterQueue()
+dagMgr := dag.NewManager(st)
 
-pool := NewPool(2, sched, nil, dlq, nil)
+pool := NewPool(2, sched, st, dlq, dagMgr, nil)
 pool.Start()
+defer pool.Stop()
 
-testTask := &task.Task{
-ID:         "1",
-Name:       "test-task",
-Priority:   5,
-MaxRetries: 3,
+tsk := task.NewTask("unit-test-task", 1, 3)
+st.Save(tsk)
+sched.Push(tsk)
+
+time.Sleep(1 * time.Second)
+
+res, err := st.Get(tsk.ID)
+if err != nil {
+t.Fatalf("Failed to fetch task: %v", err)
 }
 
-sched.Push(testTask)
-
-time.Sleep(200 * time.Millisecond)
-
-pool.Stop()
-
-if testTask.Status != task.StatusCompleted {
-t.Errorf("Expected status COMPLETED, got %s", testTask.Status)
+if res.Status != task.StatusCompleted {
+t.Errorf("Expected task status COMPLETED, got %s", res.Status)
 }
 }
 
