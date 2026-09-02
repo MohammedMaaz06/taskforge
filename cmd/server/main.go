@@ -8,6 +8,7 @@ import (
 
 "github.com/prometheus/client_golang/prometheus/promhttp"
 
+"taskforge/internal/dag"
 "taskforge/internal/metrics"
 "taskforge/internal/notifier"
 "taskforge/internal/scheduler"
@@ -27,6 +28,7 @@ defer st.Close()
 sched := scheduler.NewTaskScheduler()
 dlq := scheduler.NewDeadLetterQueue()
 notif := notifier.NewNotifier()
+dagMgr := dag.NewManager(st)
 
 listener := func(t *task.Task, status task.Status) {
 switch status {
@@ -39,7 +41,7 @@ notif.Notify(notifier.EventTaskDLQ, t)
 }
 }
 
-wp := worker.NewPool(3, sched, st, dlq, listener)
+wp := worker.NewPool(3, sched, st, dlq, dagMgr, listener)
 wp.Start()
 defer wp.Stop()
 
@@ -49,11 +51,12 @@ w.Header().Set("Content-Type", "application/json")
 switch r.Method {
 case http.MethodPost:
 var req struct {
-Name            string `json:"name"`
-Priority        int    `json:"priority"`
-MaxRetries      int    `json:"max_retries"`
-DelaySeconds    int    `json:"delay_seconds"`
-IntervalSeconds int    `json:"interval_seconds"`
+Name            string   `json:"name"`
+Priority        int      `json:"priority"`
+MaxRetries      int      `json:"max_retries"`
+DelaySeconds    int      `json:"delay_seconds"`
+IntervalSeconds int      `json:"interval_seconds"`
+DependsOn       []string `json:"depends_on"`
 }
 if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 http.Error(w, err.Error(), http.StatusBadRequest)
@@ -72,12 +75,23 @@ if req.IntervalSeconds > 0 {
 t.IntervalSeconds = req.IntervalSeconds
 }
 
+if len(req.DependsOn) > 0 {
+t.DependsOn = req.DependsOn
+canRun, err := dagMgr.CanExecute(t)
+if err != nil || !canRun {
+t.Status = task.StatusWaiting
+}
+}
+
 if err := st.Save(t); err != nil {
 http.Error(w, err.Error(), http.StatusInternalServerError)
 return
 }
+
+if t.Status == task.StatusPending {
 sched.Push(t)
 metrics.QueueDepth.Set(float64(sched.Size()))
+}
 
 w.WriteHeader(http.StatusCreated)
 json.NewEncoder(w).Encode(t)

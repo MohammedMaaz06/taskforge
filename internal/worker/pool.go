@@ -7,6 +7,7 @@ import (
 "sync"
 "time"
 
+"taskforge/internal/dag"
 "taskforge/internal/metrics"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
@@ -20,6 +21,7 @@ numWorkers int
 sched      *scheduler.TaskScheduler
 store      store.Store
 dlq        *scheduler.DeadLetterQueue
+dagMgr     *dag.Manager
 listener   TaskListener
 cancelMap  map[string]context.CancelFunc
 mu         sync.Mutex
@@ -27,12 +29,13 @@ wg         sync.WaitGroup
 quit       chan struct{}
 }
 
-func NewPool(numWorkers int, sched *scheduler.TaskScheduler, store store.Store, dlq *scheduler.DeadLetterQueue, listener TaskListener) *Pool {
+func NewPool(numWorkers int, sched *scheduler.TaskScheduler, store store.Store, dlq *scheduler.DeadLetterQueue, dagMgr *dag.Manager, listener TaskListener) *Pool {
 return &Pool{
 numWorkers: numWorkers,
 sched:      sched,
 store:      store,
 dlq:        dlq,
+dagMgr:     dagMgr,
 listener:   listener,
 cancelMap:  make(map[string]context.CancelFunc),
 quit:       make(chan struct{}),
@@ -105,7 +108,6 @@ time.Sleep(100 * time.Millisecond)
 continue
 }
 
-// Delay execution if scheduled in the future
 if time.Now().Before(t.ScheduledAt) {
 time.Sleep(time.Until(t.ScheduledAt))
 }
@@ -144,12 +146,13 @@ metrics.TaskFailures.Inc()
 if p.listener != nil {
 p.listener(t, task.StatusFailed)
 }
+p.dagMgr.EvaluateDependents(t.ID, func(dt *task.Task) { p.sched.Push(dt) })
 return
 }
 default:
 }
 
-// Simulate work / failure test
+// Simulated Task Failure
 if t.Name == "fail-task" {
 t.LastError = fmt.Sprintf("simulated failure for task %s", t.ID)
 t.CurrentRetry++
@@ -164,6 +167,7 @@ metrics.TaskFailures.Inc()
 if p.listener != nil {
 p.listener(t, task.StatusDLQ)
 }
+p.dagMgr.EvaluateDependents(t.ID, func(dt *task.Task) { p.sched.Push(dt) })
 } else {
 t.Status = task.StatusPending
 p.store.Save(t)
@@ -190,14 +194,17 @@ if p.listener != nil {
 p.listener(t, task.StatusCompleted)
 }
 
-// Re-enqueue if configured as a recurring task
+// Trigger dependent waiting tasks in DAG
+p.dagMgr.EvaluateDependents(t.ID, func(dt *task.Task) {
+p.sched.Push(dt)
+})
+
 if t.IntervalSeconds > 0 {
 nextTask := task.NewTask(t.Name, t.Priority, t.MaxRetries)
 nextTask.IntervalSeconds = t.IntervalSeconds
 nextTask.ScheduledAt = time.Now().Add(time.Duration(t.IntervalSeconds) * time.Second)
 p.store.Save(nextTask)
 p.sched.Push(nextTask)
-log.Printf("INFO recurring task scheduled name=%s next_id=%s interval=%ds", t.Name, nextTask.ID, t.IntervalSeconds)
 }
 }
 

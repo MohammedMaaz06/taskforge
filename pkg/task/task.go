@@ -10,10 +10,12 @@ type Status string
 
 const (
 StatusPending   Status = "PENDING"
+StatusWaiting   Status = "WAITING"
 StatusRunning   Status = "RUNNING"
 StatusCompleted Status = "COMPLETED"
 StatusFailed    Status = "FAILED"
 StatusDLQ       Status = "DLQ"
+StatusBlocked   Status = "BLOCKED"
 )
 
 type Task struct {
@@ -27,6 +29,7 @@ CurrentRetry    int       `json:"current_retry"`
 LastError       string    `json:"last_error,omitempty"`
 ScheduledAt     time.Time `json:"scheduled_at"`
 IntervalSeconds int       `json:"interval_seconds,omitempty"`
+DependsOn       []string  `json:"depends_on,omitempty"`
 CreatedAt       time.Time `json:"created_at"`
 UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -47,6 +50,7 @@ Priority:     priority,
 MaxRetries:   maxRetries,
 CurrentRetry: 0,
 ScheduledAt:  now,
+DependsOn:    []string{},
 CreatedAt:    now,
 UpdatedAt:    now,
 }
