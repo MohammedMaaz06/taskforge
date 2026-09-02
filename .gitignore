@@ -4,3 +4,5 @@ taskforge.db
 *.db-wal
 *.db-shm
 taskforge.exe
+
+*.db
