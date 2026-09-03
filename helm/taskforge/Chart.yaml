@@ -1,0 +1,7 @@
+apiVersion: v2
+name: taskforge
+description: A Helm chart for TaskForge Distributed Task Scheduler
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+

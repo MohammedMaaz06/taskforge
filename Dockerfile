@@ -1,16 +1,28 @@
 FROM golang:alpine AS builder
-RUN apk add --no-cache gcc musl-dev
+
 WORKDIR /app
+
+# Install build dependencies for CGO if needed
+RUN apk add --no-cache gcc musl-dev
+
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -o /app/server ./cmd/server
 
-FROM alpine:3.19
+COPY . .
+
+# Build static binary
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o taskforge ./cmd/server
+
+FROM alpine:latest
+
 WORKDIR /app
-RUN apk add --no-cache ca-certificates sqlite-libs
-COPY --from=builder /app/server /app/server
-COPY web ./web
+
+RUN apk --no-cache add ca-certificates tzdata
+
+COPY --from=builder /app/taskforge .
+COPY --from=builder /app/static ./static
 
 EXPOSE 8080
-CMD ["/app/server"]
+
+ENTRYPOINT ["./taskforge"]
+
