@@ -9,8 +9,9 @@ import (
 )
 
 type mockStore struct {
-mu    sync.Mutex
-tasks map[string]*task.Task
+mu        sync.Mutex
+tasks     map[string]*task.Task
+failList  bool
 }
 
 func newMockStore() *mockStore {
@@ -37,6 +38,9 @@ return t, nil
 func (m *mockStore) List(statusFilter ...string) ([]*task.Task, error) {
 m.mu.Lock()
 defer m.mu.Unlock()
+if m.failList {
+return nil, store.ErrTaskNotFound
+}
 list := make([]*task.Task, 0, len(m.tasks))
 filter := ""
 if len(statusFilter) > 0 {
@@ -79,6 +83,14 @@ t.Fatalf("expected canRun=true, err=nil, got canRun=%v, err=%v", canRun, err)
 }
 })
 
+t.Run("Parent Missing Returns Error", func(t *testing.T) {
+child := &task.Task{ID: "child-0", DependsOn: []string{"missing-parent"}, Status: task.StatusWaiting}
+canRun, err := mgr.CanExecute(child)
+if err == nil || canRun {
+t.Fatalf("expected error for missing parent, got canRun=%v, err=%v", canRun, err)
+}
+})
+
 t.Run("Parent Not Completed Returns False", func(t *testing.T) {
 parent := &task.Task{ID: "parent-1", Status: task.StatusRunning}
 _ = st.Save(parent)
@@ -101,19 +113,82 @@ t.Fatalf("expected canRun=true, err=nil, got canRun=%v, err=%v", canRun, err)
 }
 })
 
-t.Run("Parent Failed Returns Error", func(t *testing.T) {
-parent := &task.Task{ID: "parent-3", Status: task.StatusFailed}
+t.Run("Parent Failed/DLQ/Blocked Returns Error", func(t *testing.T) {
+statuses := []task.Status{task.StatusFailed, task.StatusDLQ, task.StatusBlocked}
+
+for idx, stt := range statuses {
+pID := "parent-unrecoverable-" + string(stt)
+cID := "child-unrecoverable-" + string(stt) + string(rune(idx))
+
+parent := &task.Task{ID: pID, Status: stt}
 _ = st.Save(parent)
 
-child := &task.Task{ID: "child-3", DependsOn: []string{"parent-3"}, Status: task.StatusWaiting}
+child := &task.Task{ID: cID, DependsOn: []string{pID}, Status: task.StatusWaiting}
 canRun, err := mgr.CanExecute(child)
 if err == nil || canRun {
-t.Fatalf("expected error for failed parent, got canRun=%v, err=%v", canRun, err)
+t.Fatalf("expected error for parent status %s, got canRun=%v, err=%v", stt, canRun, err)
+}
 }
 })
 }
 
 func TestDAG_EvaluateDependents(t *testing.T) {
+t.Run("Store List Error Handled Gracefully", func(t *testing.T) {
+st := newMockStore()
+st.failList = true
+mgr := NewManager(st)
+
+pushed := false
+mgr.EvaluateDependents("p-1", func(tk *task.Task) { pushed = true })
+if pushed {
+t.Fatal("expected no push on store list failure")
+}
+})
+
+t.Run("Ignores Non-Waiting Tasks and Unrelated Dependencies", func(t *testing.T) {
+st := newMockStore()
+mgr := NewManager(st)
+
+parent := &task.Task{ID: "p-1", Status: task.StatusCompleted}
+runningTask := &task.Task{ID: "c-running", DependsOn: []string{"p-1"}, Status: task.StatusRunning}
+unrelatedTask := &task.Task{ID: "c-other", DependsOn: []string{"p-99"}, Status: task.StatusWaiting}
+
+_ = st.Save(parent)
+_ = st.Save(runningTask)
+_ = st.Save(unrelatedTask)
+
+pushedCount := 0
+mgr.EvaluateDependents("p-1", func(tk *task.Task) { pushedCount++ })
+
+if pushedCount != 0 {
+t.Fatalf("expected 0 pushes, got %d", pushedCount)
+}
+})
+
+t.Run("Blocks Dependent Task When Parent Fails", func(t *testing.T) {
+st := newMockStore()
+mgr := NewManager(st)
+
+parent := &task.Task{ID: "p-failed", Status: task.StatusFailed}
+child := &task.Task{ID: "c-failed-dep", DependsOn: []string{"p-failed"}, Status: task.StatusWaiting}
+
+_ = st.Save(parent)
+_ = st.Save(child)
+
+pushed := false
+mgr.EvaluateDependents("p-failed", func(tk *task.Task) { pushed = true })
+
+if pushed {
+t.Fatal("expected failed parent child NOT to be pushed")
+}
+
+updatedChild, _ := st.Get("c-failed-dep")
+if updatedChild.Status != task.StatusBlocked {
+t.Fatalf("expected child status StatusBlocked, got %s", updatedChild.Status)
+}
+})
+
+t.Run("Pushes Dependent Task When Parent Completes", func(t *testing.T) {
 st := newMockStore()
 mgr := NewManager(st)
 
@@ -139,5 +214,6 @@ updatedChild, _ := st.Get("c-1")
 if updatedChild.Status != task.StatusPending {
 t.Fatalf("expected child status StatusPending, got %s", updatedChild.Status)
 }
+})
 }
 
