@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskforge
+  labels:
+    app: taskforge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: taskforge
+  template:
+    metadata:
+      labels:
+        app: taskforge
+    spec:
+      containers:
+      - name: taskforge
+        image: taskforge:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskforge
+spec:
+  type: ClusterIP
+  selector:
+    app: taskforge
+  ports:
+  - port: 8080
+    targetPort: 8080
+
