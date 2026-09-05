@@ -1,8 +1,9 @@
-FROM golang:alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /app
 
-# Install build dependencies for CGO if needed
+ENV GOTOOLCHAIN=auto
+
 RUN apk add --no-cache gcc musl-dev
 
 COPY go.mod go.sum ./
@@ -10,19 +11,17 @@ RUN go mod download
 
 COPY . .
 
-# Build static binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o taskforge ./cmd/server
+RUN CGO_ENABLED=1 GOOS=linux go build -o /app/server ./cmd/server
 
 FROM alpine:latest
 
 WORKDIR /app
 
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk add --no-cache ca-certificates sqlite-libs
 
-COPY --from=builder /app/taskforge .
-COPY --from=builder /app/static ./static
+COPY --from=builder /app/server .
 
 EXPOSE 8080
 
-ENTRYPOINT ["./taskforge"]
+ENTRYPOINT ["/app/server"]
 
