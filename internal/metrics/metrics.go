@@ -1,35 +1,43 @@
 package metrics
 
 import (
+"net/http"
+
 "github.com/prometheus/client_golang/prometheus"
-"github.com/prometheus/client_golang/prometheus/promauto"
+"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
-TasksCompleted = promauto.NewCounter(prometheus.CounterOpts{
-Name: "taskforge_tasks_completed_total",
-Help: "The total number of successfully completed tasks",
-})
-
-TaskFailures = promauto.NewCounter(prometheus.CounterOpts{
-Name: "taskforge_tasks_failed_total",
-Help: "The total number of failed tasks",
-})
-
-DLQCount = promauto.NewGauge(prometheus.GaugeOpts{
-Name: "taskforge_dlq_tasks_total",
-Help: "Current number of tasks in Dead Letter Queue",
-})
-
-QueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+TaskQueueDepth = prometheus.NewGauge(prometheus.GaugeOpts{
 Name: "taskforge_queue_depth",
-Help: "Current depth of pending task scheduler queue",
+Help: "Current number of tasks pending in the scheduler queue",
 })
 
-TaskDuration = promauto.NewHistogram(prometheus.HistogramOpts{
-Name:    "taskforge_task_duration_seconds",
-Help:    "Execution time for tasks in seconds",
+TaskExecutionDuration = prometheus.NewHistogramVec(
+prometheus.HistogramOpts{
+Name:    "taskforge_task_execution_duration_seconds",
+Help:    "Histogram of task execution latencies in seconds",
 Buckets: prometheus.DefBuckets,
-})
+},
+[]string{"status"},
 )
+
+TasksProcessedTotal = prometheus.NewCounterVec(
+prometheus.CounterOpts{
+Name: "taskforge_tasks_processed_total",
+Help: "Total count of tasks processed by workers",
+},
+[]string{"status"},
+)
+)
+
+func InitMetrics() {
+prometheus.MustRegister(TaskQueueDepth)
+prometheus.MustRegister(TaskExecutionDuration)
+prometheus.MustRegister(TasksProcessedTotal)
+}
+
+func MetricsHandler() http.Handler {
+return promhttp.Handler()
+}
 

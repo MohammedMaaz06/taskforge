@@ -8,6 +8,7 @@ import (
 "time"
 
 "taskforge/internal/dag"
+"taskforge/internal/metrics"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
 "taskforge/pkg/task"
@@ -59,6 +60,7 @@ go p.workerLoop(i)
 func (p *Pool) Submit(t *task.Task) bool {
 select {
 case p.taskQueue <- t:
+metrics.TaskQueueDepth.Set(float64(len(p.taskQueue)))
 return true
 default:
 return false
@@ -82,6 +84,7 @@ case <-p.ctx.Done():
 return
 case t, ok := <-p.taskQueue:
 if ok && t != nil {
+metrics.TaskQueueDepth.Set(float64(len(p.taskQueue)))
 p.processTask(t)
 }
 case <-ticker.C:
@@ -95,15 +98,18 @@ p.processTask(t)
 }
 
 func (p *Pool) processTask(t *task.Task) {
+start := time.Now()
 if p.locker != nil {
 lockKey := fmt.Sprintf("task:%s", t.ID)
 acquired, err := p.locker.Acquire(p.ctx, lockKey, 30*time.Second)
 if err != nil {
 log.Printf("ERROR failed to acquire lock for task %s: %v", t.ID, err)
+metrics.TasksProcessedTotal.WithLabelValues("failed_lock").Inc()
 return
 }
 if !acquired {
 log.Printf("INFO task %s skipped, claimed by another instance", t.ID)
+metrics.TasksProcessedTotal.WithLabelValues("skipped_lock").Inc()
 return
 }
 defer func() {
@@ -124,5 +130,9 @@ t.Status = task.StatusCompleted
 if p.store != nil {
 _ = p.store.UpdateStatus(t.ID, task.StatusCompleted, "")
 }
+
+duration := time.Since(start).Seconds()
+metrics.TaskExecutionDuration.WithLabelValues(string(task.StatusCompleted)).Observe(duration)
+metrics.TasksProcessedTotal.WithLabelValues(string(task.StatusCompleted)).Inc()
 }
 
