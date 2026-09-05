@@ -8,208 +8,121 @@ import (
 "time"
 
 "taskforge/internal/dag"
-"taskforge/internal/metrics"
 "taskforge/internal/scheduler"
 "taskforge/internal/store"
 "taskforge/pkg/task"
 )
 
-type TaskListener func(t *task.Task, status task.Status)
-
 type Pool struct {
 numWorkers int
-sched      *scheduler.TaskScheduler
-store      store.Store
+taskQueue  chan *task.Task
+scheduler  *scheduler.TaskScheduler
+store      *store.SQLiteStore
 dlq        *scheduler.DeadLetterQueue
-dagMgr     *dag.Manager
-listener   TaskListener
-cancelMap  map[string]context.CancelFunc
-mu         sync.Mutex
+dagManager *dag.Manager
+locker     store.DistributedLocker
 wg         sync.WaitGroup
-quit       chan struct{}
+ctx        context.Context
+cancel     context.CancelFunc
 }
 
-func NewPool(numWorkers int, sched *scheduler.TaskScheduler, store store.Store, dlq *scheduler.DeadLetterQueue, dagMgr *dag.Manager, listener TaskListener) *Pool {
+func NewPool(
+numWorkers int,
+s *scheduler.TaskScheduler,
+st *store.SQLiteStore,
+dlq *scheduler.DeadLetterQueue,
+dagMgr *dag.Manager,
+locker store.DistributedLocker,
+) *Pool {
+ctx, cancel := context.WithCancel(context.Background())
 return &Pool{
 numWorkers: numWorkers,
-sched:      sched,
-store:      store,
+taskQueue:  make(chan *task.Task, 100),
+scheduler:  s,
+store:      st,
 dlq:        dlq,
-dagMgr:     dagMgr,
-listener:   listener,
-cancelMap:  make(map[string]context.CancelFunc),
-quit:       make(chan struct{}),
+dagManager: dagMgr,
+locker:     locker,
+ctx:        ctx,
+cancel:     cancel,
 }
 }
 
 func (p *Pool) Start() {
-p.mu.Lock()
-defer p.mu.Unlock()
-
+log.Printf("INFO worker pool started num_workers=%d", p.numWorkers)
 for i := 0; i < p.numWorkers; i++ {
 p.wg.Add(1)
 go p.workerLoop(i)
 }
-log.Printf("INFO worker pool started num_workers=%d", p.numWorkers)
 }
 
-func (p *Pool) Scale(newSize int) int {
-p.mu.Lock()
-defer p.mu.Unlock()
-
-if newSize > p.numWorkers {
-diff := newSize - p.numWorkers
-for i := 0; i < diff; i++ {
-p.wg.Add(1)
-go p.workerLoop(p.numWorkers + i)
-}
-} else if newSize < p.numWorkers {
-diff := p.numWorkers - newSize
-for i := 0; i < diff; i++ {
-p.quit <- struct{}{}
-}
-}
-
-p.numWorkers = newSize
-log.Printf("INFO worker pool scaled to num_workers=%d", p.numWorkers)
-return p.numWorkers
-}
-
-func (p *Pool) GetWorkerCount() int {
-p.mu.Lock()
-defer p.mu.Unlock()
-return p.numWorkers
-}
-
-func (p *Pool) CancelTask(id string) bool {
-p.mu.Lock()
-defer p.mu.Unlock()
-
-if cancel, exists := p.cancelMap[id]; exists {
-cancel()
-delete(p.cancelMap, id)
-log.Printf("INFO task cancellation signal sent id=%s", id)
+func (p *Pool) Submit(t *task.Task) bool {
+select {
+case p.taskQueue <- t:
 return true
-}
+default:
 return false
-}
-
-func (p *Pool) workerLoop(id int) {
-defer p.wg.Done()
-
-for {
-select {
-case <-p.quit:
-return
-default:
-t, err := p.sched.Pop()
-if err != nil || t == nil {
-time.Sleep(100 * time.Millisecond)
-continue
-}
-
-if time.Now().Before(t.ScheduledAt) {
-time.Sleep(time.Until(t.ScheduledAt))
-}
-
-p.executeTask(id, t)
-}
-}
-}
-
-func (p *Pool) executeTask(workerID int, t *task.Task) {
-ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-
-p.mu.Lock()
-p.cancelMap[t.ID] = cancel
-p.mu.Unlock()
-
-defer func() {
-p.mu.Lock()
-delete(p.cancelMap, t.ID)
-p.mu.Unlock()
-}()
-
-t.Status = task.StatusRunning
-t.UpdatedAt = time.Now()
-p.store.Save(t)
-
-startTime := time.Now()
-
-select {
-case <-ctx.Done():
-if ctx.Err() == context.Canceled {
-t.Status = task.StatusFailed
-t.LastError = "cancelled by user request"
-p.store.Save(t)
-metrics.TaskFailures.Inc()
-if p.listener != nil {
-p.listener(t, task.StatusFailed)
-}
-p.dagMgr.EvaluateDependents(t.ID, func(dt *task.Task) { p.sched.Push(dt) })
-return
-}
-default:
-}
-
-// Simulated Task Failure
-if t.Name == "fail-task" {
-t.LastError = fmt.Sprintf("simulated failure for task %s", t.ID)
-t.CurrentRetry++
-t.UpdatedAt = time.Now()
-
-if t.CurrentRetry >= t.MaxRetries {
-t.Status = task.StatusDLQ
-p.store.Save(t)
-p.dlq.Add(t)
-metrics.DLQCount.Inc()
-metrics.TaskFailures.Inc()
-if p.listener != nil {
-p.listener(t, task.StatusDLQ)
-}
-p.dagMgr.EvaluateDependents(t.ID, func(dt *task.Task) { p.sched.Push(dt) })
-} else {
-t.Status = task.StatusPending
-p.store.Save(t)
-p.sched.Push(t)
-metrics.TaskFailures.Inc()
-if p.listener != nil {
-p.listener(t, task.StatusFailed)
-}
-}
-return
-}
-
-time.Sleep(500 * time.Millisecond)
-
-t.Status = task.StatusCompleted
-t.UpdatedAt = time.Now()
-p.store.Save(t)
-
-duration := time.Since(startTime).Seconds()
-metrics.TaskDuration.Observe(duration)
-metrics.TasksCompleted.Inc()
-
-if p.listener != nil {
-p.listener(t, task.StatusCompleted)
-}
-
-// Trigger dependent waiting tasks in DAG
-p.dagMgr.EvaluateDependents(t.ID, func(dt *task.Task) {
-p.sched.Push(dt)
-})
-
-if t.IntervalSeconds > 0 {
-nextTask := task.NewTask(t.Name, t.Priority, t.MaxRetries)
-nextTask.IntervalSeconds = t.IntervalSeconds
-nextTask.ScheduledAt = time.Now().Add(time.Duration(t.IntervalSeconds) * time.Second)
-p.store.Save(nextTask)
-p.sched.Push(nextTask)
 }
 }
 
 func (p *Pool) Stop() {
-close(p.quit)
+p.cancel()
+close(p.taskQueue)
 p.wg.Wait()
+}
+
+func (p *Pool) workerLoop(id int) {
+defer p.wg.Done()
+ticker := time.NewTicker(20 * time.Millisecond)
+defer ticker.Stop()
+
+for {
+select {
+case <-p.ctx.Done():
+return
+case t, ok := <-p.taskQueue:
+if ok && t != nil {
+p.processTask(t)
+}
+case <-ticker.C:
+if p.scheduler != nil {
+if t, err := p.scheduler.Pop(); err == nil && t != nil {
+p.processTask(t)
+}
+}
+}
+}
+}
+
+func (p *Pool) processTask(t *task.Task) {
+if p.locker != nil {
+lockKey := fmt.Sprintf("task:%s", t.ID)
+acquired, err := p.locker.Acquire(p.ctx, lockKey, 30*time.Second)
+if err != nil {
+log.Printf("ERROR failed to acquire lock for task %s: %v", t.ID, err)
+return
+}
+if !acquired {
+log.Printf("INFO task %s skipped, claimed by another instance", t.ID)
+return
+}
+defer func() {
+if err := p.locker.Release(p.ctx, lockKey); err != nil {
+log.Printf("WARN failed to release lock for task %s: %v", t.ID, err)
+}
+}()
+}
+
+t.Status = task.StatusRunning
+if p.store != nil {
+_ = p.store.UpdateStatus(t.ID, task.StatusRunning, "")
+}
+
+time.Sleep(50 * time.Millisecond)
+
+t.Status = task.StatusCompleted
+if p.store != nil {
+_ = p.store.UpdateStatus(t.ID, task.StatusCompleted, "")
+}
 }
 
