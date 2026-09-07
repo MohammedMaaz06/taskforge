@@ -1,0 +1,65 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "taskforge.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "taskforge.labels" . | nindent 4 }}
+    grafana_dashboard: "1"
+  annotations:
+    k8s-sidecar-target-directory: "/tmp/dashboards"
+data:
+  taskforge-dashboard.json: |-
+    {
+      "editable": true,
+      "graphTooltip": 1,
+      "panels": [
+        {
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "id": 1, "title": "Tasks Completed (Total)", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(taskforge_tasks_processed_total{status=\"completed\"})", "refId": "A" }]
+        },
+        {
+          "gridPos": { "h": 6, "w": 6, "x": 6, "y": 0 },
+          "id": 2, "title": "Tasks Submitted (Total)", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(taskforge_tasks_processed_total{status=\"submitted\"})", "refId": "A" }]
+        },
+        {
+          "gridPos": { "h": 6, "w": 6, "x": 12, "y": 0 },
+          "id": 3, "title": "Current Queue Depth", "type": "gauge",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(taskforge_queue_depth)", "refId": "A" }]
+        },
+        {
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+          "id": 4, "title": "Active Worker Replicas", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "count(up{job=\"taskforge\"})", "refId": "A" }]
+        },
+        {
+          "gridPos": { "h": 9, "w": 12, "x": 0, "y": 6 },
+          "id": 5, "title": "Task Throughput Rate (tasks/sec)", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [{ "expr": "sum(rate(taskforge_tasks_processed_total[1m])) by (status)", "legendFormat": "{{ "{{" }}status}}", "refId": "A" }]
+        },
+        {
+          "gridPos": { "h": 9, "w": 12, "x": 12, "y": 6 },
+          "id": 6, "title": "Task Processing Duration", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            { "expr": "histogram_quantile(0.50, sum(rate(taskforge_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p50", "refId": "A" },
+            { "expr": "histogram_quantile(0.95, sum(rate(taskforge_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95", "refId": "B" },
+            { "expr": "histogram_quantile(0.99, sum(rate(taskforge_execution_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p99", "refId": "C" }
+          ]
+        }
+      ],
+      "refresh": "5s",
+      "schemaVersion": 39,
+      "style": "dark",
+      "title": "TaskForge / Worker Operations",
+      "uid": "taskforge-ops"
+    }
+{{- end }}
+
