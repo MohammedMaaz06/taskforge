@@ -98,6 +98,15 @@ p.processTask(t)
 }
 
 func (p *Pool) processTask(t *task.Task) {
+// Artificial CPU load simulation for HPA testing
+if delayStr := os.Getenv("WORK_DELAY_MS"); delayStr != "" {
+if delayMs, err := strconv.Atoi(delayStr); err == nil && delayMs > 0 {
+done := time.Now().Add(time.Duration(delayMs) * time.Millisecond)
+for time.Now().Before(done) {
+// Busy loop to consume CPU
+}
+}
+}
 start := time.Now()
 if p.locker != nil {
 lockKey := fmt.Sprintf("task:%s", t.ID)
@@ -135,4 +144,5 @@ duration := time.Since(start).Seconds()
 metrics.TaskExecutionDuration.WithLabelValues(string(task.StatusCompleted)).Observe(duration)
 metrics.TasksProcessedTotal.WithLabelValues(string(task.StatusCompleted)).Inc()
 }
+
 

@@ -1,4 +1,4 @@
-replicaCount: 3
+replicaCount: 2
 
 image:
   repository: taskforge
@@ -19,6 +19,7 @@ env:
   PORT: "8080"
   REDIS_ADDR: "redis-master.default.svc.cluster.local:6379"
   SQLITE_PATH: "/data/taskforge.db"
+  WORK_DELAY_MS: "2000"
 
 persistence:
   enabled: true
@@ -27,16 +28,16 @@ persistence:
 
 resources:
   limits:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 200m
+    memory: 256Mi
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 50m
+    memory: 64Mi
 
 autoscaling:
   enabled: true
   minReplicas: 2
   maxReplicas: 10
-  targetCPUUtilizationPercentage: 75
+  targetCPUUtilizationPercentage: 50
   targetMemoryUtilizationPercentage: 80
 
