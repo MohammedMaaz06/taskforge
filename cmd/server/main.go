@@ -16,7 +16,6 @@ if port == "" {
 port = "8080"
 }
 
-// Initialize Auth Guard
 jwtSecret := os.Getenv("JWT_SECRET")
 if jwtSecret == "" {
 jwtSecret = "taskforge-dev-secret-key"
@@ -28,22 +27,31 @@ authGuard := auth.NewAuthGuard(jwtSecret, apiKeys)
 
 mux := http.NewServeMux()
 
-// Public Routes
+// Metrics & Health Checks
 mux.Handle("/metrics", promhttp.Handler())
-mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+
+healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusOK)
 w.Write([]byte(`{"status":"UP"}`))
 })
 
+mux.Handle("/health", healthHandler)
+mux.Handle("/healthz", healthHandler)
+
 // Protected API Routes
-apiMux := http.NewServeMux()
-apiMux.HandleFunc("/api/tasks", func(w http.ResponseWriter, r *http.Request) {
+taskHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
 w.Write([]byte(`{"status":"success","message":"Authenticated access granted"}`))
 })
 
-// Wrap protected routes with auth middleware
+apiMux := http.NewServeMux()
+apiMux.Handle("/api/tasks", taskHandler)
+apiMux.Handle("/api/v1/tasks", taskHandler)
+
+// Route /api and /api/ to the protected mux
+mux.Handle("/api", authGuard.Middleware(apiMux))
 mux.Handle("/api/", authGuard.Middleware(apiMux))
 
 // Serve Static Assets
@@ -55,4 +63,3 @@ if err := http.ListenAndServe(":"+port, mux); err != nil {
 log.Fatalf("Server failed: %v", err)
 }
 }
-
