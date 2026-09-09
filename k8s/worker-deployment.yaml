@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskforge-worker
+  labels:
+    app: taskforge-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: taskforge-worker
+  template:
+    metadata:
+      labels:
+        app: taskforge-worker
+    spec:
+      containers:
+      - name: worker
+        image: taskforge-worker:v1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: REDIS_ADDR
+          value: "redis-master.default.svc.cluster.local:6379"
+
