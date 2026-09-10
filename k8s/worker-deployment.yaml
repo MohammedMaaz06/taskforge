@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: worker
-        image: taskforge-worker:v4
+        image: taskforge-worker:v5
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_ADDR

@@ -4,6 +4,7 @@ import (
 "context"
 "crypto/sha256"
 "encoding/json"
+"errors"
 "fmt"
 "log"
 "net/http"
@@ -14,6 +15,7 @@ import (
 "github.com/prometheus/client_golang/prometheus/promhttp"
 "github.com/redis/go-redis/v9"
 "taskforge/internal/store"
+"taskforge/internal/task"
 )
 
 var (
@@ -32,24 +34,33 @@ Buckets: prometheus.DefBuckets,
 },
 []string{"type"},
 )
+dlqTasksTotal = prometheus.NewCounter(
+prometheus.CounterOpts{
+Name: "taskforge_worker_dlq_tasks_total",
+Help: "Total tasks routed to Dead Letter Queue",
+},
+)
 )
 
 func init() {
 prometheus.MustRegister(tasksProcessed)
 prometheus.MustRegister(taskDuration)
+prometheus.MustRegister(dlqTasksTotal)
 }
 
-type Task struct {
-ID   string `json:"id"`
-Type string `json:"type"`
+func executeTask(t task.Task) error {
+if t.Type == "failing_task" {
+return errors.New("simulated execution failure")
 }
-
-func doCPUWork() {
-// Active CPU crunching: 5 million SHA256 iterations
+if t.Type == "cpu_bound" {
 h := sha256.New()
-for i := 0; i < 5000000; i++ {
-h.Write([]byte(fmt.Sprintf("work-payload-%d", i)))
+for i := 0; i < 3000000; i++ {
+h.Write([]byte(fmt.Sprintf("work-%d", i)))
 }
+return nil
+}
+time.Sleep(200 * time.Millisecond)
+return nil
 }
 
 func main() {
@@ -58,10 +69,7 @@ if redisAddr == "" {
 redisAddr = "redis-master.default.svc.cluster.local:6379"
 }
 
-rdb := redis.NewClient(&redis.Options{
-Addr: redisAddr,
-})
-
+rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 workerID := fmt.Sprintf("worker-%d", os.Getpid())
 locker := store.NewRedisLocker(rdb, workerID)
 ctx := context.Background()
@@ -69,57 +77,67 @@ ctx := context.Background()
 go func() {
 http.Handle("/metrics", promhttp.Handler())
 log.Println("Exposing Prometheus metrics on :8081/metrics")
-if err := http.ListenAndServe(":8081", nil); err != nil {
-log.Printf("Metrics HTTP server failed: %v", err)
-}
+_ = http.ListenAndServe(":8081", nil)
 }()
 
-fmt.Printf("Worker %s starting with metrics and distributed locking...\n", workerID)
+log.Printf("Worker %s initialized with Retries, Exponential Backoff, and DLQ handling...", workerID)
 
 for {
-result, err := rdb.BLPop(ctx, 0, "task_queue").Result()
+result, err := rdb.BLPop(ctx, 0, task.QueueMain).Result()
 if err != nil {
-log.Printf("Error popping task: %v", err)
 time.Sleep(1 * time.Second)
 continue
 }
 
-var task Task
-if err := json.Unmarshal([]byte(result[1]), &task); err != nil {
-log.Printf("Failed to unmarshal task payload: %v", err)
+var t task.Task
+if err := json.Unmarshal([]byte(result[1]), &t); err != nil {
 tasksProcessed.WithLabelValues("unmarshal_error", "unknown").Inc()
 continue
 }
 
-taskKey := fmt.Sprintf("task:%s", task.ID)
-lockTTL := 30 * time.Second
+if t.MaxRetries == 0 {
+t.MaxRetries = 3
+}
 
-acquired, err := locker.Acquire(ctx, taskKey, lockTTL)
+taskKey := fmt.Sprintf("task:%s", t.ID)
+acquired, err := locker.Acquire(ctx, taskKey, 30*time.Second)
 if err != nil || !acquired {
-log.Printf("[SKIP] Task %s is locked or failed acquisition", task.ID)
-tasksProcessed.WithLabelValues("skipped", task.Type).Inc()
+tasksProcessed.WithLabelValues("skipped", t.Type).Inc()
 continue
 }
 
 startTime := time.Now()
-log.Printf("[WORKER %s] [LOCK ACQUIRED] Processing task: ID=%s, Type=%s", workerID, task.ID, task.Type)
-
-// Real CPU workload execution
-if task.Type == "cpu_bound" {
-doCPUWork()
-} else {
-time.Sleep(500 * time.Millisecond)
-}
-
+execErr := executeTask(t)
 duration := time.Since(startTime).Seconds()
-taskDuration.WithLabelValues(task.Type).Observe(duration)
+taskDuration.WithLabelValues(t.Type).Observe(duration)
 
-if err := locker.Release(ctx, taskKey); err != nil {
-log.Printf("[LOCK RELEASE WARN] Could not release lock for task %s: %v", task.ID, err)
-tasksProcessed.WithLabelValues("release_warn", task.Type).Inc()
+_ = locker.Release(ctx, taskKey)
+
+if execErr != nil {
+log.Printf("[FAILURE] Task %s failed (Attempt %d/%d): %v", t.ID, t.RetryCount+1, t.MaxRetries, execErr)
+
+if t.RetryCount < t.MaxRetries {
+t.RetryCount++
+t.LastError = execErr.Error()
+backoff := task.CalculateBackoff(t.RetryCount)
+
+log.Printf("[RETRY BACKOFF] Re-queuing task %s after %v delay...", t.ID, backoff)
+time.Sleep(backoff)
+
+data, _ := json.Marshal(t)
+rdb.RPush(ctx, task.QueueMain, data)
+tasksProcessed.WithLabelValues("retried", t.Type).Inc()
 } else {
-log.Printf("[WORKER %s] [LOCK RELEASED] Task %s completed successfully", workerID, task.ID)
-tasksProcessed.WithLabelValues("success", task.Type).Inc()
+log.Printf("[DLQ ROUTE] Task %s exhausted retries. Moving to %s", t.ID, task.QueueDLQ)
+if err := task.PushToDLQ(ctx, rdb, t, execErr.Error()); err != nil {
+log.Printf("Error pushing task %s to DLQ: %v", t.ID, err)
+}
+dlqTasksTotal.Inc()
+tasksProcessed.WithLabelValues("dlq_exhausted", t.Type).Inc()
+}
+} else {
+log.Printf("[SUCCESS] Task %s completed successfully", t.ID)
+tasksProcessed.WithLabelValues("success", t.Type).Inc()
 }
 }
 }

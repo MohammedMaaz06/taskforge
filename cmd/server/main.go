@@ -1,81 +1,134 @@
 package main
 
 import (
-"context"
+"encoding/json"
 "fmt"
-"io"
 "log"
 "net/http"
 "os"
+"time"
 
-"github.com/prometheus/client_golang/prometheus/promhttp"
 "github.com/redis/go-redis/v9"
-"taskforge/internal/auth"
+"taskforge/internal/task"
 )
 
-func main() {
-port := os.Getenv("PORT")
-if port == "" {
-port = "8080"
+func authenticate(r *http.Request) bool {
+apiKey := r.Header.Get("X-API-Key")
+expectedKey := os.Getenv("API_KEY")
+if expectedKey == "" {
+expectedKey = "tf-worker-secret-key"
+}
+return apiKey == expectedKey
 }
 
+func main() {
 redisAddr := os.Getenv("REDIS_ADDR")
 if redisAddr == "" {
 redisAddr = "redis-master.default.svc.cluster.local:6379"
 }
 
-rdb := redis.NewClient(&redis.Options{
-Addr: redisAddr,
-})
-
-jwtSecret := os.Getenv("JWT_SECRET")
-if jwtSecret == "" {
-jwtSecret = "taskforge-dev-secret-key"
-}
-apiKeys := map[string]string{
-"tf-worker-secret-key": "internal-worker-node",
-}
-authGuard := auth.NewAuthGuard(jwtSecret, apiKeys)
-
+rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 mux := http.NewServeMux()
 
-mux.Handle("/metrics", promhttp.Handler())
-
-healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-w.Header().Set("Content-Type", "application/json")
+mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 w.WriteHeader(http.StatusOK)
-w.Write([]byte(`{"status":"UP"}`))
+w.Write([]byte("OK"))
 })
-mux.Handle("/health", healthHandler)
-mux.Handle("/healthz", healthHandler)
 
-// Task submission handler pushing to Redis
-taskHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-ctx := context.Background()
-body, err := io.ReadAll(r.Body)
-if err != nil || len(body) == 0 {
-body = []byte(`{"id":"api-generated-task","type":"default"}`)
+mux.HandleFunc("/api/v1/tasks", func(w http.ResponseWriter, r *http.Request) {
+if !authenticate(r) {
+http.Error(w, "Unauthorized", http.StatusUnauthorized)
+return
+}
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
 }
 
-err = rdb.RPush(ctx, "task_queue", string(body)).Err()
+var t task.Task
+if err := json.NewDecoder(r.Body).Decode(&t); err != nil {
+http.Error(w, "Invalid payload", http.StatusBadRequest)
+return
+}
+if t.ID == "" {
+t.ID = fmt.Sprintf("task-%d", time.Now().UnixNano())
+}
+
+data, err := json.Marshal(t)
 if err != nil {
-http.Error(w, fmt.Sprintf(`{"error":"failed to enqueue task: %v"}`, err), http.StatusInternalServerError)
+http.Error(w, "Task processing error", http.StatusInternalServerError)
+return
+}
+
+if err := rdb.RPush(r.Context(), task.QueueMain, data).Err(); err != nil {
+http.Error(w, "Failed to enqueue task", http.StatusInternalServerError)
 return
 }
 
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusAccepted)
-w.Write([]byte(`{"status":"enqueued","message":"Task sent to worker queue"}`))
+json.NewEncoder(w).Encode(map[string]string{
+"status":  "enqueued",
+"message": "Task sent to worker queue",
+"id":      t.ID,
+})
 })
 
-mux.Handle("/api/tasks", authGuard.Middleware(taskHandler))
-mux.Handle("/api/v1/tasks", authGuard.Middleware(taskHandler))
-
-fileServer := http.FileServer(http.Dir("./static"))
-mux.Handle("/", fileServer)
-
-fmt.Printf("TaskForge Server starting on port %s...\n", port)
-if err := http.ListenAndServe(":"+port, mux); err != nil {
-log.Fatalf("Server failed: %v", err)
+mux.HandleFunc("/api/v1/dlq", func(w http.ResponseWriter, r *http.Request) {
+if !authenticate(r) {
+http.Error(w, "Unauthorized", http.StatusUnauthorized)
+return
 }
+if r.Method != http.MethodGet {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+tasksRaw, err := rdb.LRange(r.Context(), task.QueueDLQ, 0, 50).Result()
+if err != nil {
+http.Error(w, "Failed to query DLQ", http.StatusInternalServerError)
+return
+}
+
+var dlqTasks []task.Task
+for _, raw := range tasksRaw {
+var t task.Task
+if err := json.Unmarshal([]byte(raw), &t); err == nil {
+dlqTasks = append(dlqTasks, t)
+}
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"dlq_count": len(dlqTasks),
+"tasks":     dlqTasks,
+})
+})
+
+mux.HandleFunc("/api/v1/dlq/replay", func(w http.ResponseWriter, r *http.Request) {
+if !authenticate(r) {
+http.Error(w, "Unauthorized", http.StatusUnauthorized)
+return
+}
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+replayed, err := task.ReplayDLQ(r.Context(), rdb, 100)
+if err != nil {
+http.Error(w, "Failed to replay DLQ tasks", http.StatusInternalServerError)
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status":            "success",
+"replayed_count":    replayed,
+"destination_queue": task.QueueMain,
+})
+})
+
+log.Println("API Gateway running on :8080...")
+log.Fatal(http.ListenAndServe(":8080", mux))
 }
