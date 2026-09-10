@@ -5,7 +5,7 @@ metadata:
   labels:
     app: taskforge-worker
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: taskforge-worker
@@ -13,12 +13,26 @@ spec:
     metadata:
       labels:
         app: taskforge-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
       - name: worker
-        image: taskforge-worker:v1
+        image: taskforge-worker:v3
         imagePullPolicy: IfNotPresent
         env:
         - name: REDIS_ADDR
           value: "redis-master.default.svc.cluster.local:6379"
+        ports:
+        - containerPort: 8081
+          name: metrics
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
 
