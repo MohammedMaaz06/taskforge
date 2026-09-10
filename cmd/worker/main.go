@@ -2,6 +2,7 @@ package main
 
 import (
 "context"
+"crypto/sha256"
 "encoding/json"
 "fmt"
 "log"
@@ -43,6 +44,14 @@ ID   string `json:"id"`
 Type string `json:"type"`
 }
 
+func doCPUWork() {
+// Active CPU crunching: 5 million SHA256 iterations
+h := sha256.New()
+for i := 0; i < 5000000; i++ {
+h.Write([]byte(fmt.Sprintf("work-payload-%d", i)))
+}
+}
+
 func main() {
 redisAddr := os.Getenv("REDIS_ADDR")
 if redisAddr == "" {
@@ -57,7 +66,6 @@ workerID := fmt.Sprintf("worker-%d", os.Getpid())
 locker := store.NewRedisLocker(rdb, workerID)
 ctx := context.Background()
 
-// Expose Prometheus metrics endpoint
 go func() {
 http.Handle("/metrics", promhttp.Handler())
 log.Println("Exposing Prometheus metrics on :8081/metrics")
@@ -96,7 +104,12 @@ continue
 startTime := time.Now()
 log.Printf("[WORKER %s] [LOCK ACQUIRED] Processing task: ID=%s, Type=%s", workerID, task.ID, task.Type)
 
-time.Sleep(500 * time.Millisecond) // Simulated workload
+// Real CPU workload execution
+if task.Type == "cpu_bound" {
+doCPUWork()
+} else {
+time.Sleep(500 * time.Millisecond)
+}
 
 duration := time.Since(startTime).Seconds()
 taskDuration.WithLabelValues(task.Type).Observe(duration)
