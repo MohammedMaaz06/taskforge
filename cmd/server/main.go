@@ -129,6 +129,49 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
+// Feature 1: System Metrics Endpoint
+mux.HandleFunc("/api/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
+if !authenticate(r) {
+http.Error(w, "Unauthorized", http.StatusUnauthorized)
+return
+}
+
+mainLen, _ := rdb.LLen(r.Context(), task.QueueMain).Result()
+dlqLen, _ := rdb.LLen(r.Context(), task.QueueDLQ).Result()
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"main_queue_depth": mainLen,
+"dlq_depth":        dlqLen,
+"timestamp":        time.Now().Format(time.RFC3339),
+})
+})
+
+// Feature 2: DLQ Purge Endpoint
+mux.HandleFunc("/api/v1/dlq/purge", func(w http.ResponseWriter, r *http.Request) {
+if !authenticate(r) {
+http.Error(w, "Unauthorized", http.StatusUnauthorized)
+return
+}
+if r.Method != http.MethodDelete {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+deleted, err := rdb.Del(r.Context(), task.QueueDLQ).Result()
+if err != nil {
+http.Error(w, "Failed to purge DLQ", http.StatusInternalServerError)
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status":        "purged",
+"keys_removed":  deleted,
+"target_queue":  task.QueueDLQ,
+})
+})
+
 log.Println("API Gateway running on :8080...")
 log.Fatal(http.ListenAndServe(":8080", mux))
 }
