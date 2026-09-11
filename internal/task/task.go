@@ -13,16 +13,16 @@ QueueDLQ  = "taskforge:queue:dlq"
 )
 
 type Task struct {
-ID        string                 `json:"id"`
-Payload   map[string]interface{} `json:"payload"`
-RetryCount int                   `json:"retry_count"`
-Error     string                 `json:"error,omitempty"`
+ID         string                 `json:"id"`
+Payload    map[string]interface{} `json:"payload"`
+RetryCount int                    `json:"retry_count"`
+Error      string                 `json:"error,omitempty"`
 }
 
 func ReplayDLQ(ctx context.Context, rdb *redis.Client, limit int) (int, error) {
 replayed := 0
 for i := 0; i < limit; i++ {
-val, err := rdb.RPopLPush(ctx, QueueDLQ, QueueMain).Result()
+_, err := rdb.RPopLPush(ctx, QueueDLQ, QueueMain).Result()
 if err == redis.Nil {
 break
 }
