@@ -74,6 +74,52 @@ json.NewEncoder(w).Encode(map[string]string{
 })
 })
 
+mux.HandleFunc("/api/v1/tasks/batch", func(w http.ResponseWriter, r *http.Request) {
+if !authenticate(r) {
+http.Error(w, "Unauthorized", http.StatusUnauthorized)
+return
+}
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+var tasks []task.Task
+if err := json.NewDecoder(r.Body).Decode(&tasks); err != nil {
+http.Error(w, "Invalid payload list", http.StatusBadRequest)
+return
+}
+
+pipe := rdb.Pipeline()
+enqueuedIDs := make([]string, 0, len(tasks))
+
+for i := range tasks {
+if tasks[i].ID == "" {
+tasks[i].ID = fmt.Sprintf("task-%d-%d", time.Now().UnixNano(), i)
+}
+data, err := json.Marshal(tasks[i])
+if err != nil {
+continue
+}
+pipe.RPush(r.Context(), task.QueueMain, data)
+enqueuedIDs = append(enqueuedIDs, tasks[i].ID)
+}
+
+_, err := pipe.Exec(r.Context())
+if err != nil {
+http.Error(w, "Batch execution error", http.StatusInternalServerError)
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusAccepted)
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status":   "batch_enqueued",
+"count":    len(enqueuedIDs),
+"task_ids": enqueuedIDs,
+})
+})
+
 mux.HandleFunc("/api/v1/dlq", func(w http.ResponseWriter, r *http.Request) {
 if !authenticate(r) {
 http.Error(w, "Unauthorized", http.StatusUnauthorized)
