@@ -129,7 +129,6 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// Feature 1: System Metrics Endpoint
 mux.HandleFunc("/api/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
 if !authenticate(r) {
 http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -147,7 +146,6 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// Feature 2: DLQ Purge Endpoint
 mux.HandleFunc("/api/v1/dlq/purge", func(w http.ResponseWriter, r *http.Request) {
 if !authenticate(r) {
 http.Error(w, "Unauthorized", http.StatusUnauthorized)
@@ -166,9 +164,9 @@ return
 
 w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(map[string]interface{}{
-"status":        "purged",
-"keys_removed":  deleted,
-"target_queue":  task.QueueDLQ,
+"status":       "purged",
+"keys_removed": deleted,
+"target_queue": task.QueueDLQ,
 })
 })
 
