@@ -68,7 +68,7 @@ if err != nil {
 // Parent failed/blocked -> mark dependent as BLOCKED
 t.Status = task.StatusBlocked
 t.LastError = fmt.Sprintf("dependency error: %v", err)
-t.UpdatedAt = t.UpdatedAt
+t.UpdatedAt = time.Now()
 m.store.Save(t)
 continue
 }
@@ -80,4 +80,5 @@ schedPush(t)
 }
 }
 }
+
 
