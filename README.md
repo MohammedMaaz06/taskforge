@@ -31,3 +31,5 @@ Then run:
 
 ```bash
 go run ./cmd/server
+## Telemetry
+Metrics exposed at /metrics.
