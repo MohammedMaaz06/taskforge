@@ -33,3 +33,6 @@ Then run:
 go run ./cmd/server
 ## Telemetry
 Metrics exposed at /metrics.
+
+## Web UI
+Access dashboard at /ui.
