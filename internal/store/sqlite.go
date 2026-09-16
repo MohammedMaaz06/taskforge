@@ -2,8 +2,8 @@ package store
 
 import (
 "database/sql"
-"errors"
 "fmt"
+"time"
 
 _ "modernc.org/sqlite"
 "taskforge/pkg/task"
@@ -14,35 +14,35 @@ db *sql.DB
 }
 
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
-db, err := sql.Open("sqlite", dbPath)
+dsn := fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)", dbPath)
+db, err := sql.Open("sqlite", dsn)
 if err != nil {
-return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+return nil, fmt.Errorf("failed to open sqlite db: %w", err)
 }
 
-if err := db.Ping(); err != nil {
-return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
+db.SetMaxOpenConns(1)
+db.SetMaxIdleConns(1)
+db.SetConnMaxLifetime(time.Hour)
+
+store := &SQLiteStore{db: db}
+if err := store.initSchema(); err != nil {
+db.Close()
+return nil, err
 }
 
-s := &SQLiteStore{db: db}
-if err := s.initSchema(); err != nil {
-return nil, fmt.Errorf("failed to initialize schema: %w", err)
-}
-
-return s, nil
+return store, nil
 }
 
 func (s *SQLiteStore) initSchema() error {
 query := `
 CREATE TABLE IF NOT EXISTS tasks (
 id TEXT PRIMARY KEY,
-name TEXT,
-payload BLOB,
-priority INTEGER,
+type TEXT,
 status TEXT,
+payload TEXT,
 max_retries INTEGER,
 current_retry INTEGER,
 last_error TEXT,
-scheduled_at DATETIME,
 created_at DATETIME,
 updated_at DATETIME
 );`
@@ -52,52 +52,46 @@ return err
 
 func (s *SQLiteStore) Save(t *task.Task) error {
 query := `
-INSERT INTO tasks (id, name, payload, priority, status, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO tasks (id, type, status, payload, max_retries, current_retry, last_error, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
-name=excluded.name,
-payload=excluded.payload,
-priority=excluded.priority,
+type=excluded.type,
 status=excluded.status,
-max_retries=excluded.max_retries,
+payload=excluded.payload,
 current_retry=excluded.current_retry,
 last_error=excluded.last_error,
-scheduled_at=excluded.scheduled_at,
-updated_at=excluded.updated_at;`
-
-_, err := s.db.Exec(query, t.ID, t.Name, t.Payload, t.Priority, string(t.Status), t.MaxRetries, t.CurrentRetry, t.LastError, t.ScheduledAt, t.CreatedAt, t.UpdatedAt)
+updated_at=excluded.updated_at`
+_, err := s.db.Exec(query, t.ID, t.Name, t.Status, t.Payload, t.MaxRetries, t.CurrentRetry, t.LastError, t.CreatedAt, t.UpdatedAt)
 return err
 }
 
 func (s *SQLiteStore) Get(id string) (*task.Task, error) {
-query := `SELECT id, name, payload, priority, status, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at FROM tasks WHERE id = ?`
+query := `SELECT id, type, status, payload, max_retries, current_retry, last_error, created_at, updated_at FROM tasks WHERE id = ?`
 row := s.db.QueryRow(query, id)
 
 var t task.Task
-var statusStr string
-err := row.Scan(&t.ID, &t.Name, &t.Payload, &t.Priority, &statusStr, &t.MaxRetries, &t.CurrentRetry, &t.LastError, &t.ScheduledAt, &t.CreatedAt, &t.UpdatedAt)
-if err != nil {
-if errors.Is(err, sql.ErrNoRows) {
+err := row.Scan(&t.ID, &t.Name, &t.Status, &t.Payload, &t.MaxRetries, &t.CurrentRetry, &t.LastError, &t.CreatedAt, &t.UpdatedAt)
+if err == sql.ErrNoRows {
 return nil, ErrTaskNotFound
 }
+if err != nil {
 return nil, err
 }
-t.Status = task.Status(statusStr)
 return &t, nil
 }
 
 func (s *SQLiteStore) List(statusFilter ...string) ([]*task.Task, error) {
-var query string
-var args []interface{}
+query := `SELECT id, type, status, payload, max_retries, current_retry, last_error, created_at, updated_at FROM tasks`
+var rows *sql.Rows
+var err error
 
-if len(statusFilter) > 0 && statusFilter[0] != "" {
-query = `SELECT id, name, payload, priority, status, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at FROM tasks WHERE status = ?`
-args = append(args, statusFilter[0])
+if len(statusFilter) > 0 {
+query += ` WHERE status = ?`
+rows, err = s.db.Query(query, statusFilter[0])
 } else {
-query = `SELECT id, name, payload, priority, status, max_retries, current_retry, last_error, scheduled_at, created_at, updated_at FROM tasks`
+rows, err = s.db.Query(query)
 }
 
-rows, err := s.db.Query(query, args...)
 if err != nil {
 return nil, err
 }
@@ -106,26 +100,27 @@ defer rows.Close()
 var tasks []*task.Task
 for rows.Next() {
 var t task.Task
-var statusStr string
-if err := rows.Scan(&t.ID, &t.Name, &t.Payload, &t.Priority, &statusStr, &t.MaxRetries, &t.CurrentRetry, &t.LastError, &t.ScheduledAt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+if err := rows.Scan(&t.ID, &t.Name, &t.Status, &t.Payload, &t.MaxRetries, &t.CurrentRetry, &t.LastError, &t.CreatedAt, &t.UpdatedAt); err != nil {
 return nil, err
 }
-t.Status = task.Status(statusStr)
 tasks = append(tasks, &t)
 }
 return tasks, nil
 }
 
 func (s *SQLiteStore) UpdateStatus(id string, status task.Status, lastErr string) error {
-query := `UPDATE tasks SET status = ?, last_error = ? WHERE id = ?`
-_, err := s.db.Exec(query, string(status), lastErr, id)
+query := `UPDATE tasks SET status = ?, last_error = ?, updated_at = ? WHERE id = ?`
+res, err := s.db.Exec(query, status, lastErr, time.Now(), id)
+if err != nil {
 return err
 }
-
-func (s *SQLiteStore) Close() error {
-if s.db != nil {
-return s.db.Close()
+affected, _ := res.RowsAffected()
+if affected == 0 {
+return ErrTaskNotFound
 }
 return nil
 }
 
+func (s *SQLiteStore) Close() error {
+return s.db.Close()
+}
