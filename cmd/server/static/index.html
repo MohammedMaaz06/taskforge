@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskForge Control Plane</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: system-ui, -apple-system, sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+    </style>
+</head>
+<body class="p-6">
+    <div class="max-w-7xl mx-auto space-y-6">
+        <!-- Header -->
+        <div class="flex justify-between items-center glass p-6 rounded-xl">
+            <div>
+                <h1 class="text-3xl font-bold tracking-tight text-indigo-400">TaskForge</h1>
+                <p class="text-slate-400 text-sm mt-1">High-Performance Task Orchestration Engine</p>
+            </div>
+            <div class="flex items-center space-x-3">
+                <span class="relative flex h-3 w-3">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                </span>
+                <span class="text-sm font-medium text-emerald-400">Engine Online</span>
+            </div>
+        </div>
+
+        <!-- Metrics Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="glass p-5 rounded-xl">
+                <div class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Active Workers</div>
+                <div class="text-3xl font-extrabold mt-2 text-white" id="stat-workers">--</div>
+            </div>
+            <div class="glass p-5 rounded-xl">
+                <div class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Queue Throughput</div>
+                <div class="text-3xl font-extrabold mt-2 text-indigo-400" id="stat-throughput">-- req/s</div>
+            </div>
+            <div class="glass p-5 rounded-xl">
+                <div class="text-slate-400 text-xs font-semibold uppercase tracking-wider">Avg Latency</div>
+                <div class="text-3xl font-extrabold mt-2 text-emerald-400" id="stat-latency">-- ms</div>
+            </div>
+            <div class="glass p-5 rounded-xl">
+                <div class="text-slate-400 text-xs font-semibold uppercase tracking-wider">DLQ Poison Tasks</div>
+                <div class="text-3xl font-extrabold mt-2 text-rose-400" id="stat-dlq">--</div>
+            </div>
+        </div>
+
+        <!-- Action Bar -->
+        <div class="glass p-6 rounded-xl flex items-center justify-between">
+            <h2 class="text-xl font-semibold">Dead Letter Queue Management</h2>
+            <button onclick="replayDLQ()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-4 py-2 rounded-lg transition-all shadow-lg hover:shadow-indigo-500/25">
+                Bulk Replay DLQ Tasks
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket client for live telemetry stream
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.workers !== undefined) document.getElementById('stat-workers').innerText = data.workers;
+            if (data.throughput !== undefined) document.getElementById('stat-throughput').innerText = `${data.throughput} req/s`;
+            if (data.latency !== undefined) document.getElementById('stat-latency').innerText = `${data.latency} ms`;
+            if (data.dlq_count !== undefined) document.getElementById('stat-dlq').innerText = data.dlq_count;
+        };
+
+        async function replayDLQ() {
+            const res = await fetch('/v1/dlq/replay', { method: 'POST' });
+            if (res.ok) {
+                alert('DLQ tasks queued for replay successfully!');
+            }
+        }
+    </script>
+</body>
+</html>
