@@ -2,7 +2,7 @@ package store
 
 import (
 "testing"
-"taskforge/internal/task"
+"taskforge/pkg/task"
 )
 
 func BenchmarkSQLiteStore_Save(b *testing.B) {
@@ -18,7 +18,7 @@ b.ResetTimer()
 for i := 0; i < b.N; i++ {
 t := &task.Task{
 ID:     "bench-task",
-Type:   "benchmark",
+Name:   "benchmark",
 Status: "PENDING",
 }
 _ = s.Save(t)
