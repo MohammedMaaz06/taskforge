@@ -109,8 +109,8 @@ const dashboardHTML = `<!DOCTYPE html>
                             <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">High Priority</span></td>
                             <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">priority_enqueued</span></td>
                             <td class="px-6 py-4 text-right">
-                                <button onclick="alert('Triggering DLQ Replay...')" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">
-                                    Replay Task
+                                <button onclick="replayDLQ()" class="px-3 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors">
+                                    Replay DLQ Task
                                 </button>
                             </td>
                         </tr>
@@ -121,6 +121,20 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        async function replayDLQ() {
+            try {
+                const res = await fetch('/api/v1/dlq/replay', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    alert('Success: ' + data.message);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Failed to execute DLQ replay request');
+            }
+        }
+
         setInterval(async () => {
             try {
                 const res = await fetch('/ui/data');
@@ -173,6 +187,36 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 "main_depth": mainLen,
 "dlq_depth":  dlqLen,
 "prio_depth": prioLen,
+})
+})
+
+// DLQ Replay Endpoint: Pops item from DLQ and moves it back to main queue
+mux.HandleFunc("/api/v1/dlq/replay", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+item, err := rdb.RPop(r.Context(), task.QueueDLQ).Result()
+if err == redis.Nil {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusBadRequest)
+json.NewEncoder(w).Encode(map[string]string{"error": "DLQ is currently empty"})
+return
+} else if err != nil {
+http.Error(w, "Failed to fetch from DLQ", http.StatusInternalServerError)
+return
+}
+
+if err := rdb.LPush(r.Context(), task.QueueMain, item).Err(); err != nil {
+http.Error(w, "Failed to re-enqueue item into main queue", http.StatusInternalServerError)
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]string{
+"status":  "replayed",
+"message": "Task successfully moved from DLQ to Main Queue",
 })
 })
 
