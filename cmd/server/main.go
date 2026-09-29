@@ -47,11 +47,13 @@ const dashboardHTML = `<!DOCTYPE html>
                 </div>
             </div>
             <div class="flex items-center space-x-3">
+                <button onclick="document.getElementById('ingest-modal').classList.remove('hidden')" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors flex items-center space-x-1.5">
+                    <span>+ Dispatch New Task</span>
+                </button>
                 <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                     <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
                     Cluster Active
                 </span>
-                <span class="px-2.5 py-1 rounded-md text-xs font-semibold bg-slate-800 text-slate-300 border border-slate-700">v7.0 Pro</span>
             </div>
         </header>
 
@@ -120,7 +122,62 @@ const dashboardHTML = `<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- Task Ingestion Modal -->
+    <div id="ingest-modal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-md w-full p-6 shadow-2xl">
+            <div class="flex justify-between items-center pb-4 mb-4 border-b border-slate-800">
+                <h3 class="text-base font-bold text-white">Dispatch New Task</h3>
+                <button onclick="document.getElementById('ingest-modal').classList.add('hidden')" class="text-slate-400 hover:text-white">&times;</button>
+            </div>
+            <form id="ingest-form" onsubmit="submitTask(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase mb-1">Queue Tier</label>
+                    <select id="queue-tier" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500">
+                        <option value="main">Main Queue (Standard)</option>
+                        <option value="priority">Priority Queue (Urgent)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase mb-1">Task Type / Name</label>
+                    <input type="text" id="task-type" value="process_image_job" required class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-sky-500" />
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase mb-1">Payload JSON</label>
+                    <textarea id="task-payload" rows="3" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500">{"user_id": "usr_99", "action": "resize"}</textarea>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="document.getElementById('ingest-modal').classList.add('hidden')" class="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700">Cancel</button>
+                    <button type="submit" class="px-4 py-2 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white">Submit Task</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
+        async function submitTask(e) {
+            e.preventDefault();
+            const tier = document.getElementById('queue-tier').value;
+            const type = document.getElementById('task-type').value;
+            const payloadRaw = document.getElementById('task-payload').value;
+
+            try {
+                const res = await fetch('/api/v1/tasks/ingest', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tier, type, payload: JSON.parse(payloadRaw) })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    alert('Task Dispatched Successfully: ' + data.id);
+                    document.getElementById('ingest-modal').classList.add('hidden');
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Invalid JSON payload or network error');
+            }
+        }
+
         async function replayDLQ() {
             try {
                 const res = await fetch('/api/v1/dlq/replay', { method: 'POST' });
@@ -190,7 +247,63 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// DLQ Replay Endpoint: Pops item from DLQ and moves it back to main queue
+// Unified Live Ingestion Endpoint from UI Form
+mux.HandleFunc("/api/v1/tasks/ingest", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+var req struct {
+Tier    string                 `json:"tier"`
+Type    string                 `json:"type"`
+Payload map[string]interface{} `json:"payload"`
+}
+
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusBadRequest)
+json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request payload"})
+return
+}
+
+taskID := fmt.Sprintf("task-%s-%d", req.Tier, time.Now().UnixNano())
+taskData, _ := json.Marshal(map[string]interface{}{
+"id":        taskID,
+"type":      req.Type,
+"payload":   req.Payload,
+"created":   time.Now().Unix(),
+})
+
+w.Header().Set("Content-Type", "application/json")
+
+if req.Tier == "priority" {
+pt := task.PriorityTask{
+ID:       taskID,
+Priority: 10,
+Payload:  string(taskData),
+}
+if err := task.EnqueuePriority(r.Context(), rdb, pt); err != nil {
+w.WriteHeader(http.StatusInternalServerError)
+json.NewEncoder(w).Encode(map[string]string{"error": "Failed to enqueue priority task"})
+return
+}
+} else {
+if err := rdb.LPush(r.Context(), task.QueueMain, taskData).Err(); err != nil {
+w.WriteHeader(http.StatusInternalServerError)
+json.NewEncoder(w).Encode(map[string]string{"error": "Failed to enqueue main task"})
+return
+}
+}
+
+w.WriteHeader(http.StatusAccepted)
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status": "enqueued",
+"id":     taskID,
+"tier":   req.Tier,
+})
+})
+
 mux.HandleFunc("/api/v1/dlq/replay", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
