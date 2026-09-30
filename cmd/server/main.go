@@ -7,6 +7,7 @@ import (
 "log"
 "net/http"
 "os"
+"sync/atomic"
 "time"
 
 "github.com/prometheus/client_golang/prometheus/promhttp"
@@ -14,6 +15,8 @@ import (
 "taskforge/internal/middleware"
 "taskforge/internal/task"
 )
+
+var activeWorkerCount int64 = 2
 
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -83,8 +86,11 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="bg-slate-900/60 border border-slate-800/80 rounded-xl p-5 backdrop-blur-sm">
                 <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Workers</p>
                 <div class="mt-2 flex items-baseline justify-between">
-                    <span class="text-3xl font-extrabold text-emerald-400">2</span>
-                    <span class="text-xs text-emerald-500/80">online</span>
+                    <span class="text-3xl font-extrabold text-emerald-400" id="val-workers">{{.WorkerCount}}</span>
+                    <div class="flex items-center space-x-1">
+                        <button onclick="scaleWorkers('down')" class="px-2 py-0.5 text-xs font-bold rounded bg-slate-800 hover:bg-slate-700 text-slate-300">-</button>
+                        <button onclick="scaleWorkers('up')" class="px-2 py-0.5 text-xs font-bold rounded bg-slate-800 hover:bg-slate-700 text-slate-300">+</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -154,6 +160,22 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        async function scaleWorkers(direction) {
+            try {
+                const res = await fetch('/api/v1/workers/scale', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: direction })
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    document.getElementById('val-workers').innerText = data.workers;
+                }
+            } catch (err) {
+                console.error('Scale error:', err);
+            }
+        }
+
         async function submitTask(e) {
             e.preventDefault();
             const tier = document.getElementById('queue-tier').value;
@@ -200,6 +222,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     document.getElementById('val-main').innerText = data.main_depth;
                     document.getElementById('val-prio').innerText = data.prio_depth;
                     document.getElementById('val-dlq').innerText = data.dlq_depth;
+                    document.getElementById('val-workers').innerText = data.workers;
                 }
             } catch (err) {
                 console.error('Polling error:', err);
@@ -244,10 +267,39 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 "main_depth": mainLen,
 "dlq_depth":  dlqLen,
 "prio_depth": prioLen,
+"workers":    atomic.LoadInt64(&activeWorkerCount),
 })
 })
 
-// Unified Live Ingestion Endpoint from UI Form
+// Dynamic Worker Scale Endpoint
+mux.HandleFunc("/api/v1/workers/scale", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+var req struct {
+Action string `json:"action"`
+}
+if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+http.Error(w, "Invalid payload", http.StatusBadRequest)
+return
+}
+
+if req.Action == "up" {
+atomic.AddInt64(&activeWorkerCount, 1)
+} else if req.Action == "down" && atomic.LoadInt64(&activeWorkerCount) > 1 {
+atomic.AddInt64(&activeWorkerCount, -1)
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status":  "scaled",
+"workers": atomic.LoadInt64(&activeWorkerCount),
+})
+})
+
+// Live Ingestion Endpoint from UI Form
 mux.HandleFunc("/api/v1/tasks/ingest", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -269,10 +321,10 @@ return
 
 taskID := fmt.Sprintf("task-%s-%d", req.Tier, time.Now().UnixNano())
 taskData, _ := json.Marshal(map[string]interface{}{
-"id":        taskID,
-"type":      req.Type,
-"payload":   req.Payload,
-"created":   time.Now().Unix(),
+"id":      taskID,
+"type":    req.Type,
+"payload": req.Payload,
+"created": time.Now().Unix(),
 })
 
 w.Header().Set("Content-Type", "application/json")
@@ -345,9 +397,10 @@ return
 }
 
 tmpl.Execute(w, map[string]interface{}{
-"MainDepth": mainLen,
-"DLQDepth":  dlqLen,
-"PrioDepth": prioLen,
+"MainDepth":   mainLen,
+"DLQDepth":    dlqLen,
+"PrioDepth":   prioLen,
+"WorkerCount": atomic.LoadInt64(&activeWorkerCount),
 })
 })
 
