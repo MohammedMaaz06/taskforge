@@ -50,6 +50,9 @@ const dashboardHTML = `<!DOCTYPE html>
                 </div>
             </div>
             <div class="flex items-center space-x-3">
+                <button onclick="purgeDLQ()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-rose-600/80 hover:bg-rose-500 text-white transition-colors flex items-center space-x-1.5">
+                    <span>Purge DLQ</span>
+                </button>
                 <button onclick="document.getElementById('ingest-modal').classList.remove('hidden')" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors flex items-center space-x-1.5">
                     <span>+ Dispatch New Task</span>
                 </button>
@@ -111,7 +114,7 @@ const dashboardHTML = `<!DOCTYPE html>
                             <th class="px-6 py-3 font-semibold text-right">Actions</th>
                         </tr>
                     </thead>
-                    <tbody class="divide-y divide-slate-800/60 text-slate-300">
+                    <tbody class="divide-y divide-slate-800/60 text-slate-300" id="task-table-body">
                         <tr class="hover:bg-slate-800/30 transition-colors">
                             <td class="px-6 py-4 font-mono text-xs text-sky-400">task-prio-1789552325125866500</td>
                             <td class="px-6 py-4"><span class="px-2 py-1 text-xs rounded bg-sky-500/10 text-sky-400 border border-sky-500/20">High Priority</span></td>
@@ -211,6 +214,21 @@ const dashboardHTML = `<!DOCTYPE html>
                 }
             } catch (err) {
                 alert('Failed to execute DLQ replay request');
+            }
+        }
+
+        async function purgeDLQ() {
+            if (!confirm('Are you sure you want to purge all items from the Dead Letter Queue?')) return;
+            try {
+                const res = await fetch('/api/v1/dlq/purge', { method: 'DELETE' });
+                const data = await res.json();
+                if (res.ok) {
+                    alert('DLQ Purged: ' + data.message);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (err) {
+                alert('Failed to purge DLQ');
             }
         }
 
@@ -356,6 +374,7 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
+// DLQ Replay Endpoint
 mux.HandleFunc("/api/v1/dlq/replay", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -382,6 +401,28 @@ w.Header().Set("Content-Type", "application/json")
 json.NewEncoder(w).Encode(map[string]string{
 "status":  "replayed",
 "message": "Task successfully moved from DLQ to Main Queue",
+})
+})
+
+// DLQ Purge Endpoint
+mux.HandleFunc("/api/v1/dlq/purge", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodDelete {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+deleted, err := rdb.Del(r.Context(), task.QueueDLQ).Result()
+if err != nil {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusInternalServerError)
+json.NewEncoder(w).Encode(map[string]string{"error": "Failed to purge DLQ"})
+return
+}
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status":  "purged",
+"message": fmt.Sprintf("DLQ successfully cleared (%d queue key reset)", deleted),
 })
 })
 
