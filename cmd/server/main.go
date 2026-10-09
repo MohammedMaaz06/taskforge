@@ -7,6 +7,7 @@ import (
 "log"
 "net/http"
 "os"
+"runtime"
 "sync/atomic"
 "time"
 
@@ -99,6 +100,25 @@ const dashboardHTML = `<!DOCTYPE html>
                         <button onclick="scaleWorkers('up')" class="px-2 py-0.5 text-xs font-bold rounded bg-slate-800 hover:bg-slate-700 text-slate-300">+</button>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Telemetry & System Health Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+            <div class="bg-slate-900/40 border border-slate-800/80 rounded-xl p-4">
+                <p class="text-xs font-semibold text-slate-400 uppercase">Heap Memory Alloc</p>
+                <p class="text-2xl font-bold text-sky-400 mt-1" id="val-mem">-- MB</p>
+                <p class="text-xs text-slate-500 mt-1">Runtime RAM Footprint</p>
+            </div>
+            <div class="bg-slate-900/40 border border-slate-800/80 rounded-xl p-4">
+                <p class="text-xs font-semibold text-slate-400 uppercase">Active Goroutines</p>
+                <p class="text-2xl font-bold text-emerald-400 mt-1" id="val-goroutines">--</p>
+                <p class="text-xs text-slate-500 mt-1">Lightweight Execution Threads</p>
+            </div>
+            <div class="bg-slate-900/40 border border-slate-800/80 rounded-xl p-4">
+                <p class="text-xs font-semibold text-slate-400 uppercase">GC Cycles</p>
+                <p class="text-2xl font-bold text-purple-400 mt-1" id="val-gc">--</p>
+                <p class="text-xs text-slate-500 mt-1">Garbage Collector Passes</p>
             </div>
         </div>
 
@@ -286,6 +306,14 @@ const dashboardHTML = `<!DOCTYPE html>
                     isPaused = data.paused;
                     updatePauseUI();
                 }
+
+                const tRes = await fetch('/api/v1/telemetry');
+                if (tRes.ok) {
+                    const tData = await tRes.json();
+                    document.getElementById('val-mem').innerText = (tData.alloc_bytes / (1024 * 1024)).toFixed(2) + ' MB';
+                    document.getElementById('val-goroutines').innerText = tData.goroutines;
+                    document.getElementById('val-gc').innerText = tData.gc_cycles;
+                }
             } catch (err) {
                 console.error('Polling error:', err);
             }
@@ -317,6 +345,20 @@ mux.Handle("/metrics", promhttp.Handler())
 mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 w.WriteHeader(http.StatusOK)
 w.Write([]byte("OK"))
+})
+
+// Runtime Process Telemetry Endpoint
+mux.HandleFunc("/api/v1/telemetry", func(w http.ResponseWriter, r *http.Request) {
+var m runtime.MemStats
+runtime.ReadMemStats(&m)
+
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"goroutines":  runtime.NumGoroutine(),
+"alloc_bytes": m.Alloc,
+"sys_bytes":   m.Sys,
+"gc_cycles":   m.NumGC,
+})
 })
 
 mux.HandleFunc("/ui/data", func(w http.ResponseWriter, r *http.Request) {
