@@ -17,6 +17,7 @@ import (
 )
 
 var activeWorkerCount int64 = 2
+var clusterPaused int32 = 0
 
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="en" class="dark">
@@ -50,15 +51,18 @@ const dashboardHTML = `<!DOCTYPE html>
                 </div>
             </div>
             <div class="flex items-center space-x-3">
+                <button id="pause-btn" onclick="togglePauseCluster()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-600/80 hover:bg-amber-500 text-white transition-colors flex items-center space-x-1.5">
+                    <span id="pause-btn-text">Pause Cluster</span>
+                </button>
                 <button onclick="purgeDLQ()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-rose-600/80 hover:bg-rose-500 text-white transition-colors flex items-center space-x-1.5">
                     <span>Purge DLQ</span>
                 </button>
                 <button onclick="document.getElementById('ingest-modal').classList.remove('hidden')" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-colors flex items-center space-x-1.5">
                     <span>+ Dispatch New Task</span>
                 </button>
-                <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
-                    Cluster Active
+                <span id="cluster-status-pill" class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span id="cluster-pulse" class="w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse"></span>
+                    <span id="cluster-status-text">Cluster Active</span>
                 </span>
             </div>
         </header>
@@ -163,6 +167,44 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <script>
+        let isPaused = false;
+
+        async function togglePauseCluster() {
+            const endpoint = isPaused ? '/api/v1/cluster/resume' : '/api/v1/cluster/pause';
+            try {
+                const res = await fetch(endpoint, { method: 'POST' });
+                if (res.ok) {
+                    const data = await res.json();
+                    isPaused = data.paused;
+                    updatePauseUI();
+                }
+            } catch (err) {
+                alert('Failed to toggle cluster pause state');
+            }
+        }
+
+        function updatePauseUI() {
+            const btnText = document.getElementById('pause-btn-text');
+            const btn = document.getElementById('pause-btn');
+            const pill = document.getElementById('cluster-status-pill');
+            const text = document.getElementById('cluster-status-text');
+            const pulse = document.getElementById('cluster-pulse');
+
+            if (isPaused) {
+                btnText.innerText = 'Resume Cluster';
+                btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white transition-colors flex items-center space-x-1.5';
+                pill.className = 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20';
+                pulse.className = 'w-1.5 h-1.5 rounded-full bg-amber-400 mr-1.5 animate-pulse';
+                text.innerText = 'Cluster Paused';
+            } else {
+                btnText.innerText = 'Pause Cluster';
+                btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-600/80 hover:bg-amber-500 text-white transition-colors flex items-center space-x-1.5';
+                pill.className = 'inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                pulse.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1.5 animate-pulse';
+                text.innerText = 'Cluster Active';
+            }
+        }
+
         async function scaleWorkers(direction) {
             try {
                 const res = await fetch('/api/v1/workers/scale', {
@@ -241,6 +283,8 @@ const dashboardHTML = `<!DOCTYPE html>
                     document.getElementById('val-prio').innerText = data.prio_depth;
                     document.getElementById('val-dlq').innerText = data.dlq_depth;
                     document.getElementById('val-workers').innerText = data.workers;
+                    isPaused = data.paused;
+                    updatePauseUI();
                 }
             } catch (err) {
                 console.error('Polling error:', err);
@@ -286,6 +330,34 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 "dlq_depth":  dlqLen,
 "prio_depth": prioLen,
 "workers":    atomic.LoadInt64(&activeWorkerCount),
+"paused":     atomic.LoadInt32(&clusterPaused) == 1,
+})
+})
+
+// Cluster Circuit Breaker Endpoints
+mux.HandleFunc("/api/v1/cluster/pause", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+atomic.StoreInt32(&clusterPaused, 1)
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status": "paused",
+"paused": true,
+})
+})
+
+mux.HandleFunc("/api/v1/cluster/resume", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+atomic.StoreInt32(&clusterPaused, 0)
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]interface{}{
+"status": "resumed",
+"paused": false,
 })
 })
 
@@ -317,10 +389,17 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// Live Ingestion Endpoint from UI Form
+// Live Ingestion Endpoint
 mux.HandleFunc("/api/v1/tasks/ingest", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+
+if atomic.LoadInt32(&clusterPaused) == 1 {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusServiceUnavailable)
+json.NewEncoder(w).Encode(map[string]string{"error": "Cluster is currently paused"})
 return
 }
 
