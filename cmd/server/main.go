@@ -25,7 +25,7 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TaskForge | Control Center</title>
+    <title>TaskForge | Enterprise Control Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -47,8 +47,8 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="flex items-center space-x-3">
                 <div class="h-8 w-8 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 font-bold">TF</div>
                 <div>
-                    <h1 class="text-xl font-bold tracking-tight text-white">TaskForge Engine</h1>
-                    <p class="text-xs text-slate-400">Distributed Orchestration & Telemetry</p>
+                    <h1 class="text-xl font-bold tracking-tight text-white">TaskForge Enterprise</h1>
+                    <p class="text-xs text-slate-400">Distributed Orchestration & Token Bucket Throttling</p>
                 </div>
             </div>
             <div class="flex items-center space-x-3">
@@ -103,7 +103,7 @@ const dashboardHTML = `<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- Telemetry & System Health Grid -->
+        <!-- Telemetry Grid -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
             <div class="bg-slate-900/40 border border-slate-800/80 rounded-xl p-4">
                 <p class="text-xs font-semibold text-slate-400 uppercase">Heap Memory Alloc</p>
@@ -257,6 +257,8 @@ const dashboardHTML = `<!DOCTYPE html>
                 if (res.ok) {
                     alert('Task Dispatched Successfully: ' + data.id);
                     document.getElementById('ingest-modal').classList.add('hidden');
+                } else if (res.status === 429) {
+                    alert('Rate Limit Exceeded: Too many ingestion requests. Please slow down.');
                 } else {
                     alert('Error: ' + data.error);
                 }
@@ -431,8 +433,8 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// Live Ingestion Endpoint
-mux.HandleFunc("/api/v1/tasks/ingest", func(w http.ResponseWriter, r *http.Request) {
+// Live Ingestion Endpoint protected by Distributed Rate Limiting (250 req/min)
+mux.HandleFunc("/api/v1/tasks/ingest", middleware.RateLimit(rdb, 250, time.Minute, func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
@@ -493,7 +495,7 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 "id":     taskID,
 "tier":   req.Tier,
 })
-})
+}))
 
 // DLQ Replay Endpoint
 mux.HandleFunc("/api/v1/dlq/replay", func(w http.ResponseWriter, r *http.Request) {
@@ -599,6 +601,6 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 }))
 
-log.Println("TaskForge Control Server running on :8080...")
+log.Println("TaskForge Enterprise Control Server running on :8080...")
 log.Fatal(http.ListenAndServe(":8080", mux))
 }
