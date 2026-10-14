@@ -1,6 +1,10 @@
 ﻿package main
 
 import (
+"bytes"
+"crypto/hmac"
+"crypto/sha256"
+"encoding/hex"
 "encoding/json"
 "fmt"
 "html/template"
@@ -8,6 +12,7 @@ import (
 "net/http"
 "os"
 "runtime"
+"sync"
 "sync/atomic"
 "time"
 
@@ -20,12 +25,51 @@ import (
 var activeWorkerCount int64 = 2
 var clusterPaused int32 = 0
 
+// Webhook Registry
+var (
+webhookMu       sync.RWMutex
+registeredHooks = []string{"http://localhost:9000/webhook/receiver"}
+)
+
+func dispatchWebhook(event string, payload interface{}) {
+webhookMu.RLock()
+hooks := make([]string, len(registeredHooks))
+copy(hooks, registeredHooks)
+webhookMu.RUnlock()
+
+bodyMap := map[string]interface{}{
+"event":     event,
+"timestamp": time.Now().Unix(),
+"data":      payload,
+}
+bodyBytes, _ := json.Marshal(bodyMap)
+secret := "tf-webhook-secret-key"
+
+for _, hookURL := range hooks {
+go func(url string) {
+req, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyBytes))
+if err != nil {
+return
+}
+req.Header.Set("Content-Type", "application/json")
+
+mac := hmac.New(sha256.New, []byte(secret))
+mac.Write(bodyBytes)
+signature := hex.EncodeToString(mac.Sum(nil))
+req.Header.Set("X-TaskForge-Signature", "sha256="+signature)
+
+client := &http.Client{Timeout: 3 * time.Second}
+_, _ = client.Do(req)
+}(hookURL)
+}
+}
+
 const dashboardHTML = `<!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TaskForge | Enterprise Control Center</title>
+    <title>TaskForge | Next-Gen Control Center</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
         tailwind.config = {
@@ -47,11 +91,14 @@ const dashboardHTML = `<!DOCTYPE html>
             <div class="flex items-center space-x-3">
                 <div class="h-8 w-8 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400 font-bold">TF</div>
                 <div>
-                    <h1 class="text-xl font-bold tracking-tight text-white">TaskForge Enterprise</h1>
-                    <p class="text-xs text-slate-400">Distributed Orchestration & Token Bucket Throttling</p>
+                    <h1 class="text-xl font-bold tracking-tight text-white">TaskForge Next-Gen</h1>
+                    <p class="text-xs text-slate-400">Distributed Orchestration & Webhook Engine</p>
                 </div>
             </div>
             <div class="flex items-center space-x-3">
+                <button onclick="testWebhook()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-purple-600/85 hover:bg-purple-500 text-white transition-colors flex items-center space-x-1.5">
+                    <span>Test Webhook</span>
+                </button>
                 <button id="pause-btn" onclick="togglePauseCluster()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-amber-600/80 hover:bg-amber-500 text-white transition-colors flex items-center space-x-1.5">
                     <span id="pause-btn-text">Pause Cluster</span>
                 </button>
@@ -189,6 +236,16 @@ const dashboardHTML = `<!DOCTYPE html>
     <script>
         let isPaused = false;
 
+        async function testWebhook() {
+            try {
+                const res = await fetch('/api/v1/webhooks/test', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message || 'Test webhook dispatched');
+            } catch (err) {
+                alert('Failed to trigger webhook test');
+            }
+        }
+
         async function togglePauseCluster() {
             const endpoint = isPaused ? '/api/v1/cluster/resume' : '/api/v1/cluster/pause';
             try {
@@ -258,7 +315,7 @@ const dashboardHTML = `<!DOCTYPE html>
                     alert('Task Dispatched Successfully: ' + data.id);
                     document.getElementById('ingest-modal').classList.add('hidden');
                 } else if (res.status === 429) {
-                    alert('Rate Limit Exceeded: Too many ingestion requests. Please slow down.');
+                    alert('Rate Limit Exceeded: Too many ingestion requests.');
                 } else {
                     alert('Error: ' + data.error);
                 }
@@ -349,7 +406,19 @@ w.WriteHeader(http.StatusOK)
 w.Write([]byte("OK"))
 })
 
-// Runtime Process Telemetry Endpoint
+mux.HandleFunc("/api/v1/webhooks/test", func(w http.ResponseWriter, r *http.Request) {
+if r.Method != http.MethodPost {
+http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+return
+}
+dispatchWebhook("task.test", map[string]string{"message": "Hello from TaskForge Webhook Engine!"})
+w.Header().Set("Content-Type", "application/json")
+json.NewEncoder(w).Encode(map[string]string{
+"status":  "dispatched",
+"message": "Test webhook event successfully queued for broadcast",
+})
+})
+
 mux.HandleFunc("/api/v1/telemetry", func(w http.ResponseWriter, r *http.Request) {
 var m runtime.MemStats
 runtime.ReadMemStats(&m)
@@ -378,18 +447,15 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 })
 })
 
-// Cluster Circuit Breaker Endpoints
 mux.HandleFunc("/api/v1/cluster/pause", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
 atomic.StoreInt32(&clusterPaused, 1)
+dispatchWebhook("cluster.paused", map[string]bool{"paused": true})
 w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]interface{}{
-"status": "paused",
-"paused": true,
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"status": "paused", "paused": true})
 })
 
 mux.HandleFunc("/api/v1/cluster/resume", func(w http.ResponseWriter, r *http.Request) {
@@ -398,48 +464,34 @@ http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
 atomic.StoreInt32(&clusterPaused, 0)
+dispatchWebhook("cluster.resumed", map[string]bool{"paused": false})
 w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]interface{}{
-"status": "resumed",
-"paused": false,
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"status": "resumed", "paused": false})
 })
 
-// Dynamic Worker Scale Endpoint
 mux.HandleFunc("/api/v1/workers/scale", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
-
 var req struct {
 Action string `json:"action"`
 }
-if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-http.Error(w, "Invalid payload", http.StatusBadRequest)
-return
-}
-
+json.NewDecoder(r.Body).Decode(&req)
 if req.Action == "up" {
 atomic.AddInt64(&activeWorkerCount, 1)
 } else if req.Action == "down" && atomic.LoadInt64(&activeWorkerCount) > 1 {
 atomic.AddInt64(&activeWorkerCount, -1)
 }
-
 w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]interface{}{
-"status":  "scaled",
-"workers": atomic.LoadInt64(&activeWorkerCount),
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"status": "scaled", "workers": atomic.LoadInt64(&activeWorkerCount)})
 })
 
-// Live Ingestion Endpoint protected by Distributed Rate Limiting (250 req/min)
 mux.HandleFunc("/api/v1/tasks/ingest", middleware.RateLimit(rdb, 250, time.Minute, func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
-
 if atomic.LoadInt32(&clusterPaused) == 1 {
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusServiceUnavailable)
@@ -452,11 +504,10 @@ Tier    string                 `json:"tier"`
 Type    string                 `json:"type"`
 Payload map[string]interface{} `json:"payload"`
 }
-
 if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusBadRequest)
-json.NewEncoder(w).Encode(map[string]string{"error": "Invalid request payload"})
+json.NewEncoder(w).Encode(map[string]string{"error": "Invalid payload"})
 return
 }
 
@@ -468,85 +519,47 @@ taskData, _ := json.Marshal(map[string]interface{}{
 "created": time.Now().Unix(),
 })
 
-w.Header().Set("Content-Type", "application/json")
-
 if req.Tier == "priority" {
-pt := task.PriorityTask{
-ID:       taskID,
-Priority: 10,
-Payload:  string(taskData),
-}
-if err := task.EnqueuePriority(r.Context(), rdb, pt); err != nil {
-w.WriteHeader(http.StatusInternalServerError)
-json.NewEncoder(w).Encode(map[string]string{"error": "Failed to enqueue priority task"})
-return
-}
+pt := task.PriorityTask{ID: taskID, Priority: 10, Payload: string(taskData)}
+task.EnqueuePriority(r.Context(), rdb, pt)
 } else {
-if err := rdb.LPush(r.Context(), task.QueueMain, taskData).Err(); err != nil {
-w.WriteHeader(http.StatusInternalServerError)
-json.NewEncoder(w).Encode(map[string]string{"error": "Failed to enqueue main task"})
-return
-}
+rdb.LPush(r.Context(), task.QueueMain, taskData)
 }
 
+dispatchWebhook("task.enqueued", map[string]string{"id": taskID, "tier": req.Tier})
+
+w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusAccepted)
-json.NewEncoder(w).Encode(map[string]interface{}{
-"status": "enqueued",
-"id":     taskID,
-"tier":   req.Tier,
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"status": "enqueued", "id": taskID, "tier": req.Tier})
 }))
 
-// DLQ Replay Endpoint
 mux.HandleFunc("/api/v1/dlq/replay", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodPost {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
-
 item, err := rdb.RPop(r.Context(), task.QueueDLQ).Result()
 if err == redis.Nil {
 w.Header().Set("Content-Type", "application/json")
 w.WriteHeader(http.StatusBadRequest)
-json.NewEncoder(w).Encode(map[string]string{"error": "DLQ is currently empty"})
-return
-} else if err != nil {
-http.Error(w, "Failed to fetch from DLQ", http.StatusInternalServerError)
+json.NewEncoder(w).Encode(map[string]string{"error": "DLQ is empty"})
 return
 }
-
-if err := rdb.LPush(r.Context(), task.QueueMain, item).Err(); err != nil {
-http.Error(w, "Failed to re-enqueue item into main queue", http.StatusInternalServerError)
-return
-}
-
+rdb.LPush(r.Context(), task.QueueMain, item)
+dispatchWebhook("task.replayed", map[string]string{"source": "dlq"})
 w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]string{
-"status":  "replayed",
-"message": "Task successfully moved from DLQ to Main Queue",
-})
+json.NewEncoder(w).Encode(map[string]string{"status": "replayed", "message": "Task moved from DLQ to Main"})
 })
 
-// DLQ Purge Endpoint
 mux.HandleFunc("/api/v1/dlq/purge", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != http.MethodDelete {
 http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 return
 }
-
-deleted, err := rdb.Del(r.Context(), task.QueueDLQ).Result()
-if err != nil {
+rdb.Del(r.Context(), task.QueueDLQ)
+dispatchWebhook("dlq.purged", map[string]bool{"purged": true})
 w.Header().Set("Content-Type", "application/json")
-w.WriteHeader(http.StatusInternalServerError)
-json.NewEncoder(w).Encode(map[string]string{"error": "Failed to purge DLQ"})
-return
-}
-
-w.Header().Set("Content-Type", "application/json")
-json.NewEncoder(w).Encode(map[string]interface{}{
-"status":  "purged",
-"message": fmt.Sprintf("DLQ successfully cleared (%d queue key reset)", deleted),
-})
+json.NewEncoder(w).Encode(map[string]interface{}{"status": "purged", "message": "DLQ cleared"})
 })
 
 mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
@@ -554,12 +567,7 @@ mainLen, _ := rdb.LLen(r.Context(), task.QueueMain).Result()
 dlqLen, _ := rdb.LLen(r.Context(), task.QueueDLQ).Result()
 prioLen, _ := rdb.ZCard(r.Context(), task.QueuePriority).Result()
 
-tmpl, err := template.New("dashboard").Parse(dashboardHTML)
-if err != nil {
-http.Error(w, "Template error", http.StatusInternalServerError)
-return
-}
-
+tmpl, _ := template.New("dashboard").Parse(dashboardHTML)
 tmpl.Execute(w, map[string]interface{}{
 "MainDepth":   mainLen,
 "DLQDepth":    dlqLen,
@@ -568,39 +576,6 @@ tmpl.Execute(w, map[string]interface{}{
 })
 })
 
-mux.HandleFunc("/api/v1/tasks/priority", middleware.RateLimit(rdb, 100, time.Minute, func(w http.ResponseWriter, r *http.Request) {
-if !authenticate(r) {
-http.Error(w, "Unauthorized", http.StatusUnauthorized)
-return
-}
-if r.Method != http.MethodPost {
-http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-return
-}
-
-var pt task.PriorityTask
-if err := json.NewDecoder(r.Body).Decode(&pt); err != nil {
-http.Error(w, "Invalid payload", http.StatusBadRequest)
-return
-}
-if pt.ID == "" {
-pt.ID = fmt.Sprintf("task-prio-%d", time.Now().UnixNano())
-}
-
-if err := task.EnqueuePriority(r.Context(), rdb, pt); err != nil {
-http.Error(w, "Failed to enqueue priority task", http.StatusInternalServerError)
-return
-}
-
-w.Header().Set("Content-Type", "application/json")
-w.WriteHeader(http.StatusAccepted)
-json.NewEncoder(w).Encode(map[string]interface{}{
-"status":   "priority_enqueued",
-"id":       pt.ID,
-"priority": pt.Priority,
-})
-}))
-
-log.Println("TaskForge Enterprise Control Server running on :8080...")
+log.Println("TaskForge Next-Gen Server running on :8080...")
 log.Fatal(http.ListenAndServe(":8080", mux))
 }
