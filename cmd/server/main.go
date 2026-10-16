@@ -90,9 +90,9 @@ const dashboardHTML = `<!DOCTYPE html>
                 <div class="h-10 w-10 rounded-xl bg-gradient-to-br from-sky-500/20 to-indigo-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400 font-bold shadow-lg shadow-sky-950/50">TF</div>
                 <div>
                     <h1 class="text-xl font-extrabold tracking-tight text-white flex items-center gap-2">
-                        TaskForge <span class="text-xs px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 font-medium">Enterprise v2.4</span>
+                        TaskForge <span class="text-xs px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20 font-medium">Enterprise v2.5</span>
                     </h1>
-                    <p class="text-xs text-slate-400">Distributed Orchestration & Real-Time Event Dispatcher</p>
+                    <p class="text-xs text-slate-400">Distributed Orchestration & Real-Time Filtering</p>
                 </div>
             </div>
             <div class="flex flex-wrap items-center gap-2.5">
@@ -169,11 +169,18 @@ const dashboardHTML = `<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- Task Table -->
+        <!-- Task Table with Search & Filter Bar -->
         <div class="bg-slate-900/40 border border-slate-800/80 rounded-2xl overflow-hidden backdrop-blur-md shadow-2xl">
-            <div class="px-6 py-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/60">
+            <div class="px-6 py-4 border-b border-slate-800/80 flex flex-col md:flex-row items-center justify-between bg-slate-900/60 gap-3">
                 <h2 class="text-sm font-bold text-slate-200">Live Task Stream</h2>
-                <span class="text-xs text-slate-400 font-medium">Auto-polling via /ui/data</span>
+                <div class="flex items-center space-x-3 w-full md:w-auto">
+                    <input type="text" id="task-search" oninput="filterTasks()" placeholder="Search tasks by ID..." class="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-sky-500 w-full md:w-64" />
+                    <select id="task-filter" onchange="filterTasks()" class="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-300 focus:outline-none focus:border-sky-500">
+                        <option value="all">All Tiers</option>
+                        <option value="priority">High Priority</option>
+                        <option value="main">Main Queue</option>
+                    </select>
+                </div>
             </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-left text-sm">
@@ -186,7 +193,7 @@ const dashboardHTML = `<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-800/60 text-slate-300" id="task-table-body">
-                        <tr class="hover:bg-slate-800/30 transition-colors">
+                        <tr class="task-row hover:bg-slate-800/30 transition-colors" data-id="task-prio-1789552325125866500" data-tier="priority">
                             <td class="px-6 py-4 font-mono text-xs text-sky-400">task-prio-1789552325125866500</td>
                             <td class="px-6 py-4"><span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-sky-500/10 text-sky-400 border border-sky-500/20">High Priority</span></td>
                             <td class="px-6 py-4"><span class="px-2.5 py-1 text-xs font-medium rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">priority_enqueued</span></td>
@@ -235,6 +242,25 @@ const dashboardHTML = `<!DOCTYPE html>
 
     <script>
         let isPaused = false;
+
+        function filterTasks() {
+            const query = document.getElementById('task-search').value.toLowerCase();
+            const tierFilter = document.getElementById('task-filter').value;
+            const rows = document.querySelectorAll('.task-row');
+
+            rows.forEach(row => {
+                const id = row.getAttribute('data-id').toLowerCase();
+                const tier = row.getAttribute('data-tier');
+                const matchesSearch = id.includes(query);
+                const matchesTier = (tierFilter === 'all' || tier === tierFilter);
+
+                if (matchesSearch && matchesTier) {
+                    row.style.display = '';
+                } else {
+                    row.style.display = 'none';
+                }
+            });
+        }
 
         async function testWebhook() {
             try {
